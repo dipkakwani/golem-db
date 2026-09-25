@@ -1,4 +1,4 @@
-use golemdb_cells::{CellParseError, CellType, CellValue, FloatWidth};
+use golemdb_cells::{CellParseError, CellType, CellValueRef, FloatWidth};
 use golemdb_merkle::{Hash, HashProvider};
 use std::{error::Error, fmt};
 
@@ -39,7 +39,7 @@ impl IndexTerm {
     /// Fields, including reserved-record cells, produce no index term. Validate
     /// attribute names and types only after this check; system field keys may
     /// use names that are not user identifiers.
-    pub fn from_cell(name: &str, cell: CellValue<'_>) -> Result<Option<Self>, TermError> {
+    pub fn from_cell(name: &str, cell: CellValueRef<'_>) -> Result<Option<Self>, TermError> {
         if !cell.is_indexable() {
             return Ok(None);
         }

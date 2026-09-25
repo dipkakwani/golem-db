@@ -1,4 +1,4 @@
-use golemdb_cells::{CellType as T, CellValue, FloatWidth as F, Width as W};
+use golemdb_cells::{CellType as T, CellValueRef, FloatWidth as F, Width as W};
 use golemdb_index::{BitmapContainer, IndexTerm, TermError};
 use golemdb_merkle::{Hash, HashProvider, Keccak256Hasher};
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan, scan_prefix};
@@ -185,9 +185,9 @@ fn floats_reject_nan_and_normalize_zero() {
 #[test]
 fn field_filtering_names_and_unsupported_types() {
     let value = 0u64.to_be_bytes();
-    let field = CellValue::new(T::Uint(W::W8), &value, false).unwrap();
+    let field = CellValueRef::new(T::Uint(W::W8), &value, false).unwrap();
     assert_eq!(IndexTerm::from_cell("#nextRecordID", field).unwrap(), None);
-    let cell = CellValue::new(T::Bool, &[1], true).unwrap();
+    let cell = CellValueRef::new(T::Bool, &[1], true).unwrap();
     for name in [
         "Price",
         "$owner",
