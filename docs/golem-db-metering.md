@@ -1,6 +1,6 @@
 # Golem DB Metering
 
-Status: draft for discussion, 2026-09-27. Builds on [Golem DB API — Cost and Budget](golem-db-design/golem-db-api.md#cost-and-budget) and [architecture §10](golem-db-architecture.md#10-metering-and-cost). How Arkiv turns these costs into fees is in [Arkiv Fees](arkiv-fees.md).
+Status: draft for discussion, 2026-09-27. How Arkiv turns these costs into fees is in a separate document.
 
 ## Why
 
@@ -23,13 +23,55 @@ Example attacks prevented:
 ## Principle
 
 - **Golem DB** assesses what each call costs in compute and storage, with no notion of time. Like Ethereum's `SSTORE`, storage is a one-off cost. Full nodes keep a fixed history window, so that cost covers the write and its bounded history.
-- **A host** such as Arkiv builds its own pricing on top, for example adding duration to storage ([Arkiv Fees](arkiv-fees.md)).
+- **A host** such as Arkiv builds its own pricing on top, for example adding duration to storage.
 
 ## Scope
 
 Metering of Golem DB's read and write calls: the cost model, receipts, budgets and cost schedules. How a host turns costs into fees is out of scope.
 
 ## TODO: Review Findings
+
+Review date: 2026-09-27. F1-F3 cover open accounting and contract issues.
+
+### F1. High: Read metering lacks a complete reference execution
+
+D6 gives principles, while D9 leaves the read-weight list open-ended. The available docs
+do not fully pin bitmap traversal and intersection, materialization, byte counting,
+unsuccessful lookups or charge checkpoints. Implementations could disagree on costs and
+abort points even when they return the same successful results.
+
+D6 also promises a budgeted index-ordered bulk-deletion scan that has no API definition.
+The [design rejects index-ordered emission](golem-db-design.md#the-alternative-index-ordered-emission)
+for general query sorting; a specialized purge scan needs a separate contract, not an
+implicit change to `query`.
+
+**Resolution needed:** specify the complete read operation taxonomy and deterministic
+counting order. Define exact integer evaluation of the modeled sort cost, including
+the `N = 0` case, and add conformance examples for successful and budget-aborted reads.
+As part of completing read metering, define the purge scan's signature, ordering,
+snapshot/cursor semantics and charges, or mark it as a proposed extension rather than
+an available operation.
+
+### F2. High: Immutable-data operations are missing from coverage
+
+R8 and D9 cover six operations, omitting immutable-data appends and reads. The
+[design explicitly requires](golem-db-design.md#operations) append/read op classes and
+byte charges. These operations can consume substantial disk and memory.
+
+**Resolution needed:** specify their budgets, receipts, size limits and counting rules,
+or explicitly delegate their costs to a separately specified host-controlled interface.
+
+### F3. Medium: New consensus-visible state lacks a normative schema
+
+The Record Model introduces `#meta`, D3 introduces committed population counters, and
+D5 adds per-record caps. These additions are not fully specified in the existing
+[reserved-state schema](golem-db-design.md#record-classes-and-the-reserved-catalogue).
+For example, it is unclear whether live-cell population includes bindings, metadata,
+root-history cells and the counters themselves; those choices affect roots and prices.
+
+**Resolution needed:** define exact keys, types, initialization, inclusion rules,
+overflow behavior, mutation charges and rollback behavior. Specify `#meta`'s encoding
+and read visibility, and name the new genesis parameters for record caps.
 
 ## Goals
 
@@ -42,36 +84,36 @@ Metering of Golem DB's read and write calls: the cost model, receipts, budgets a
 
 ## Requirements
 
-Cost properties, from [architecture §10](golem-db-architecture.md#what-cost-must-be):
+Cost properties:
 
 - **R1 Deterministic:** identical on every implementation, machine and version, for the same call against the same state.
 - **R2 Per call and additive:** a cost is attributable to exactly one call and summable across calls.
-- **R3 Bounded pricing:** determining a price never takes unbounded work. Write cost may depend on the call's arguments and on state the call reads anyway, never on a read made only for pricing (the no-probe rule).
+- **R3 Bounded pricing:** with a limited budget, pricing work must stay within that budget. Host-authorized unlimited estimation is outside this budget-bounded guarantee (D7). Write cost may depend on the call's arguments and on state the call reads anyway, never on a read made only for pricing (the no-probe rule).
 - **R4 Rounds up:** no caller obtains unbounded work for bounded cost. Where cost is approximated, it is approximated upward: undercharging is an attack surface, overcharging only inefficiency.
 - **R5 Defined, not measured:** cost counts logical work (rows, index terms, trie paths) as the reference execution performs it, never physical events (pages, cache hits, timing). A warm and a cold instance charge the same.
-- **R6 No refunds:** rollback is free and refunds nothing; commit is free because every call has already paid its share.
+- **R6 No refunds:** operations are metered regardless of whether their effects reach disk, including execution that only changes in-memory branch state. Rolling back a frame or discarding a branch does not refund charges already incurred. Operation charges also cover the work required to undo their effects; rollback carries no additional charge. Commit carries no additional data-plane charge: record-induced work is prepaid by calls, while block/commit overhead is host-funded (D7).
 
 Budget:
 
-- **R7:** every call accepts a budget. Exceeding it aborts with `OutOfBudget{spent}` and no partial results; `spent` includes the reads that established the price. A write that runs out of budget also reports the cost it would have required.
+- **R7:** every call accepts a budget. A write checks each planning charge before doing the work; a charge that would exceed a limited budget aborts with no writes or partial results. `OutOfBudget{spent, required?}` reports work already performed. For writes, `required` is present only when planning has established the full representable cost. D7 defines explicit unlimited planning for host-authorized estimation.
 
 Coverage and reporting:
 
 - **R8:** every read and write call (`create`, `get`, `patch`, `delete`, `query`, `count`) is metered for compute, and writes also for storage.
-- **R9:** every receipt reports the call's cost and the commit that priced it (`priced_at`), and optionally details of cell and index data added and removed by write calls.
+- **R9:** every receipt reports the call's cost and the commit that priced it (`priced_at`). Details of cell and index data added and removed by write calls (D4) are opt-in per call. Every implementation must support this option and return the details when requested; only the caller's choice to request them is optional.
 - **R10:** every user record has a maximum deletion cost, computable at any time from its shape and the current schedule. Actual deletion may cost less.
 
 Cost schedules:
 
-- **R11:** a cost schedule is a metering model plus its weights. The model (cost structure (D1) and counting rules) is code identified by a version; weights are committed data, one price per weight name.
-- **R12:** weights are adjustable at runtime through write calls, without upgrading Golem DB, taking effect at a defined commit so all instances compute the same cost. A call is priced with the schedule at its branch's base commit and never re-priced.
+- **R11:** a cost schedule is a metering model plus its weights. The model (cost structure (D2) and counting rules) is code identified by a version; weights are committed data, one price per weight name.
+- **R12:** weights are adjustable at runtime through admin writes, without upgrading Golem DB, taking effect only at a committed head boundary. Branch calls use the schedule captured at their base commit; calls without a branch capture the schedule at the current head on admission. This applies to reads of historical data as well as current data. Calls are never re-priced in flight (D8).
 
 ## Record Model
 
-Golem DB holds two kinds of records ([design §4](golem-db-design/golem-db-design.md#record-classes-and-the-reserved-catalogue)):
+Golem DB holds two kinds of records ([design §4](golem-db-design.md#record-classes-and-the-reserved-catalogue)):
 
 - **System records** hold Golem DB's own configuration and state: its deployment parameters (`#params`), the key bindings (`#recordKeys`), and its cost schedules and weights (`@meteringModel`, `@modelWeight`; the design calls these admin records). They are created at genesis, written only by Golem DB, and never deleted.
-- **User records** are managed by the application that uses Golem DB, for example Arkiv's entities and accounts. The write calls metered in D1 act on user records.
+- **User records** are managed by the application that uses Golem DB, for example Arkiv's entities and accounts. The write calls metered in D2 act on user records.
 
 A record is implemented as a flat list of cells. Each cell is a key-value pair:
 
@@ -83,7 +125,16 @@ Every user record has two system cells:
 - `#key`: maps the record to its record key.
 - `#meta`: the record's metadata, such as its cell counts (D5).
 
-Both have fixed-length encodings. A record without user-defined cells is still two cells.
+Both have fixed-length encodings. Empty user records are legal: `create` may supply
+zero user-defined cells, and `patch` may remove the last one without deleting the
+record. Such a record still has `#key` and `#meta`, with all four user counts in `#meta`
+equal to zero, plus its binding in `#recordKeys`. `get` succeeds for the existing record;
+only `delete` removes it and its binding from live state.
+
+Empty records are not free: creating one pays admission, record-base and the three
+system-cell creates (binding, `#key`, `#meta`), with no user-cell or index operations.
+Deleting an empty record pays the corresponding admission, record-base and system-cell
+deletion costs. A host may impose stricter content requirements without Golem DB doing so.
 
 The reverse mapping, record key → record ID, lives in the system record `#recordKeys`: one binding cell per live record, keyed by the 32-byte record key, holding the record ID.
 
@@ -92,55 +143,114 @@ The reverse mapping, record key → record ID, lives in the system record `#reco
 - "No record with key K" is a non-inclusion proof of the binding.
 - `#recordKeys` grows with the number of live records. Per-record caps (D5) apply to user records only.
 
-## D1. Write Cost Model
+## D1. Where Metering Happens
+
+Meets R1, R5.
+
+Cost is computed over Golem DB's logical schema.
+The logical schema includes cell rows, index terms, posting-list containers, trie paths. It does not consider lower level items such as concrete MDBX pages. Physical page-level work depends on each node's current physical history: open read transactions, compaction and configuration change which pages a write touches. Two honest instances might well disagree on those.
+
+Consequences:
+
+- A storage layout change re-measures prices; it never changes the cost structure.
+- Cost counts the reference execution, whatever an implementation short-circuits: cached trie nodes and held query results never reduce a charge.
+
+## D2. Write Cost Model
 
 Meets R1, R2, R3, R7, R11.
 
 A write call (`create`, `patch`, `delete`) touches one record. It runs in two phases: first plan the call and accumulate its cost, then apply it.
 
+Execution and cost estimation use the same read-only planner, conceptually
+`plan_write(operation, branch_state, budget) -> plan | error`. Its budget is
+`Limited(u64)` or `Unlimited` (D7). A successful plan contains the operations and their
+total cost, including planning work. Estimation returns that cost without applying the
+plan; planning never consumes record IDs, changes counters or appends rollback entries.
+The plan and estimate are valid only for the inspected branch state and pricing schedule;
+execution must prevent intervening changes or replan.
+
+Before each charged planning step, starting with admission and later the `w_rec[op]` binding lookup,
+check that its charge fits the remaining limited budget. If it does not, stop without
+performing the step and return `OutOfBudget{spent, required: None}`. Each step must have
+a known, bounded charge before execution; the calibration requirements below cover
+verification of those charges, while the reference admission procedure below defines
+admission limits. `spent` includes only completed charged steps. Equality fits:
+exhausting the budget does not by itself fail a call if no further charge is needed.
+
 1. **Plan** (reads only, no writes):
-   1. Admission: check the input's form, cell names and value lengths. No state is read.
+  1. Admission: check the input's form, cell names and value lengths, charging incrementally as defined below. No state is read. Rejected input still incurs the admission cost performed before rejection.
    2. Read the key binding (`w_rec[op]`). `create` fails with `AlreadyExists` if it exists; `patch` and `delete` fail with `NotFound` if it does not. A deleted record has no binding, so its key can be re-created.
    3. `patch` and `delete` only: read `#meta` for the current counts. A `create` starts from zero.
    4. `patch` and `delete`: read every touched cell. All operations: read every touched index term. The results decide each operation and its bytes.
    5. Compute the resulting counts and check them against the per-record caps (D5).
-   6. Compare the total cost (reads performed + planned writes) with the budget. If it exceeds the budget, fail with `OutOfBudget{spent, required}`: `spent` = the reads performed, `required` = the total. The reads' own cost is tracked as they happen; if it alone reaches the budget, the call stops at that point.
+    6. Compare the total cost (admission + record base + reads performed + planned writes) with the limited budget, if any. If it exceeds the budget, fail with `OutOfBudget{spent, required: Some(total)}`: `spent` = admission plus the record base and reads performed. No additional work is done merely to obtain `required` after an earlier budget abort. A total equal to the budget succeeds; `Unlimited` skips budget comparisons, not validation or checked arithmetic.
 2. **Apply:** execute the planned writes, reusing the phase-1 reads. No metering or validation failure can occur here; only local storage faults remain, which are not cost questions.
 
 A failure in the plan phase writes nothing, so it is charged no write cost (D7). A write is never partly applied.
 
-The plan phase yields the call's cell and index operations, system cells included. The call's cost is the record base cost plus the cost of each of these operations:
+The plan phase yields the call's cell and index operations, including the per-record system cells listed below. Host-funded commit overhead is separate (D7). The four cost components are:
 
 ```
-record op cost = w_rec[op]
-               + Σ cell ops   ( w_cell_read + w_cell[create | update | delete]
-                              + cell_trie_depth × w_cell_trie_update
-                              + bytes written × w_cell_write_byte )
-               + Σ index ops  ( w_idx_read + w_idx[join | leave]
-                              + index_trie_depth × w_index_trie_update
-                              + w_idx_term_create    (only if the term is new; covers its later removal)
-                              + bytes written × w_idx_write_byte )
+record op cost       = admission cost + w_rec[op]
+                     + Σ cell operation costs
+                     + Σ index operation costs
 
-batch cost     = Σ record op costs
+admission cost       = w_admission_base
+                     + entries inspected × w_admission_entry
+                     + bytes validated × w_admission_byte
+
+cell operation cost  = w_cell_read                         (only when read)
+                     + w_cell[create | update | delete]
+                     + cell_trie_depth × w_cell_trie_update
+                     + cell bytes written × w_cell_write_byte
+
+index operation cost = w_idx_read + w_idx[join | leave]
+                     + index_trie_depth × w_index_trie_update
+                     + w_idx_term_create                  (only if the term is new)
+                     + index bytes written × w_idx_write_byte
+
+batch cost           = Σ record op costs
 ```
 
-Every cell and index operation rewrites one leaf's trie path, priced at the modeled depth (D3). `w_cell_read` is charged only where a cell is read: by `patch` and `delete`, never by `create`.
+**Admission cost.** The base covers fixed request checks; entry and byte weights cover
+the input inspected by the reference validation procedure. Admission uses the same
+budget as all later planning steps. Check each charge before the corresponding work;
+stop with `OutOfBudget` if it cannot be funded. If validation discovers malformed input
+or a reserved target, return the corresponding error with admission cost already spent.
+Rejected input is not free. If the budget cannot fund even the admission base, no
+admission work is performed and `spent` is zero. No record, cell or index charge is
+collected unless its step is reached. Validation order and byte-counting rules must be
+deterministic; checking a declared length is distinct from inspecting payload bytes.
+Transport decoding and allocation before the Golem DB call remain host responsibilities.
+
+**Reference admission procedure.** Define the deterministic validation order, entry
+and byte counting rules, charge checkpoints, and hard request-size and change-count
+limits alongside the implementation, including which checks precede traversal and how
+they are charged. Conformance tests must fix the expected charges and errors for valid
+input, rejected input, and budget exhaustion. These rules form part of the versioned
+metering model; they must not vary between implementations. The model must also pin
+planning-read order and test charges at budget-exhaustion checkpoints.
+
+Every planned cell or index mutation pays for one leaf's trie path, priced at the modeled depth (D3). Required reads remain charged even for no-ops. `w_cell_read` is charged only where a cell is read: by `patch` and `delete`, never by `create`.
 
 **Record base cost.** `w_rec[op]` covers the fixed per-record work that is not a cell operation:
 
-- All operations: admission, validation and reading the key's binding in `#recordKeys`.
-- `create`: increment the record ID counter. A key collision fails with `AlreadyExists` (D7).
+- All operations: reading the key's binding in `#recordKeys`. Input validation is charged separately as admission.
+- `create`: increment the in-memory branch record ID counter. Persisting and merkleizing the final `#alloc` value is host-funded commit overhead (D7). A key collision fails with `AlreadyExists` (D7).
 - `patch`: check the caps.
 - `delete`: one seek to enumerate the record's cells.
 
-This work is the same for every call and touches no trie path, so it folds into one weight per operation with no depth term.
+This fixed work folds into one weight per operation with no depth term. The allocator's committed cell and trie update are accounted for separately as host-funded overhead (D7).
+
+`w_rec[op]` must be calibrated excluding the admission work now covered by the separate
+weights; adding admission to the former combined base would double charge validation.
 
 **System cell operations.** The system cells (Record Model) are charged as cell operations, like user cells:
 
 | Record operation | System cell operations |
 | --- | --- |
 | `create` | create binding, create `#key`, create `#meta`; no reads, the record is new and the binding read is in `w_rec` |
-| `patch` | read and update `#meta` |
+| `patch` | read and update `#meta`, even for empty patches or unchanged counts; write elision never reduces charges |
 | `delete` | delete binding (read in `w_rec`), read and delete `#key`, read and delete `#meta` |
 
 System cells have fixed-length encodings, so their byte terms are constants. They are not included in `#meta`'s counts or the receipt's user-cell counts (D4).
@@ -152,13 +262,14 @@ System cells have fixed-length encodings, so their byte terms are constants. The
 | cell missing, value assigned | create | new cell | – |
 | cell present, value assigned | update | new cell | old cell |
 | cell present, deletion requested | delete | – | old cell |
+| cell missing, deletion requested | read only (`w_cell_read`); no index operation | – | – |
 
 - `w_cell[op]` covers the cell row, its history entry and its change-set entry; the cell-trie path is the depth term.
 - Reading and copying an old value into history grows with its size. The write byte weight pre-pays it: every byte is copied into history at most once, when it is overwritten or deleted, so it is charged once, when written (D4). Bytes deleted are reported, not charged.
 - A record `delete` performs a cell delete for every user cell.
 - Assigning a cell its current value is charged as an update (and, for an indexed cell, as leave + join). An implementation may skip the write; optimizing such calls is the caller's responsibility, not Golem DB's.
 
-**Index operations.** For every indexed cell the call touches, a read of its index term decides the operation:
+**Index operations.** Leave the old term if the old cell was indexed; join the new term if the resulting cell is indexed, including attribute/field transitions. Each join or leave charges `w_idx_read`, even for the same term:
 
 | Read result and request | Index operation | Charged |
 | --- | --- | --- |
@@ -178,26 +289,27 @@ System cells have fixed-length encodings, so their byte terms are constants. The
 - A batch, such as a host transaction, costs the sum of its record op costs. Reads are metered separately (D6).
 - Repeated touches of the same record or cell are charged per touch. An implementation may merge the work, never the charge.
 - These weights aggregate [architecture §10](golem-db-architecture.md#structural-op-classes)'s finer op classes, which remain the calibration basis (D9).
-- On request, a receipt includes the per-part counts as a diagnostic ledger.
+- On request, a receipt includes the per-part counts as a diagnostic ledger. This per-call option must be supported by every implementation (R9).
 
-## D2. Where Metering Happens
-
-Meets R1, R5.
-
-Cost is computed over Golem DB's logical schema (cell rows, index terms, posting-list containers, trie paths), not over MDBX pages. Page-level work depends on each node's physical history: open read transactions, compaction and configuration change which pages a write touches. Two honest instances would disagree ([architecture §10](golem-db-architecture.md#where-metering-happens)).
-
-Consequences:
-
-- A storage layout change re-measures prices; it never changes the cost structure.
-- Cost counts the reference execution, whatever an implementation short-circuits: cached trie nodes and held query results never reduce a charge.
+**Calibration and verification.** Deterministic operation counts alone do not establish
+that weights adequately price the work. Weights must be calibrated against measured
+work and verified on representative and worst-case workloads within the deployment
+limits, including maximum-sized values, failed planning and repeated mutation/rollback
+cycles. Planning-read charges must cover the work performed before rejection; mutation
+charges must cover in-memory execution and undo as well as their deferred work. A
+one-time history-copy prepayment does not replace this verification of repeated
+old-value processing. Fixed per-cell charges must cover the permitted size envelope;
+if verification shows inadequate coverage or excessive overcharging, revise the weights
+or cost model. Measurements inform calibration, never per-call runtime charges, which
+remain determined by logical counts and the captured schedule.
 
 ## D3. Write Metering and Modeled Trie Depth
 
 Meets R3, R4.
 
-Trie work is deferred to commit and runs once over the branch's net changes, so a write's physical trie cost depends on the rest of the batch. Cost therefore counts **one modeled path rewrite per distinct leaf touched** in each affected trie, at a modeled depth ([architecture §10](golem-db-architecture.md#deferred-work-and-modeled-paths)). Write cost is computed from the call's arguments and the reads it owes anyway (D1), so a write can be refused before any change is applied.
+Trie work is deferred to commit and runs once over the branch's net changes, so a write's physical trie cost depends on the rest of the batch. Cost therefore counts **one modeled path rewrite per planned cell or index mutation**, including repeated touches of the same leaf, at a modeled depth ([architecture §10](golem-db-architecture.md#deferred-work-and-modeled-paths)). Write cost is computed from the call's arguments and the reads it owes anyway (D2), so a write can be refused before any change is applied.
 
-In D1, these modeled path rewrites are the depth terms of every cell and index operation.
+In D2, these modeled path rewrites are the depth terms of every cell and index operation.
 
 Golem DB keeps committed counters of live cells and distinct index terms, and derives the modeled depth from a pinned table. Tries are 16-ary, so depth grows as ⌈log₁₆ N⌉:
 
@@ -214,7 +326,15 @@ Depth is capped at 7. ⌈log₁₆ N⌉ would reach 8 only above 16⁷ (≈268M)
 - Path-rewrite cost = `cell_trie_depth × w_cell_trie_update` or `index_trie_depth × w_index_trie_update`, using the counters at the branch base.
 - The write already knows whether it adds or removes a cell or term, so counters need no extra read (R3).
 - Database growth leaves the weights: they reflect cost per node only.
-- The model over-charges repeated writes to one cell and writes sharing trie prefixes; it under-charges paths deeper than modeled by a small bounded factor, absorbed by calibrating upward (R4).
+- The model over-charges repeated writes to one cell and writes sharing trie prefixes; deeper paths can be under-charged unless calibration provides sufficient upward margins (R4).
+
+Modeled depths approximate typical path work, not maximum depth. Calibration must
+verify sufficient pricing margins for path-depth variation, growth within a branch,
+and posting-list updates. The depth cap limits charged depth, not supported database
+size or actual trie depth. The [design's depth bounds](golem-db-design.md#depth-bounds-and-future-optimization-paths)
+are 64 for cell/index tries and 12 for posting-list tries; these bounds and measured
+workloads inform verification rather than implying that current weights already cover
+every case.
 
 ## D4. Storage and Size Counting
 
@@ -226,31 +346,31 @@ Meets R8, R9.
 
 - A cell counts `8 + |name|` bytes for its key (ID prefix and name) and `1 + |value|` bytes for its value (type tag and value).
 - An index entry counts `|name| + 2 + |value|` bytes: its term key, name ‖ `0x00` ‖ type tag ‖ value.
-- Four counts per record: cells, cell bytes, indexed cells, and index bytes. They cover user cells only; system cells are fixed-size and charged separately (D1).
-- Write receipts report cells created, updated and deleted; index joins, leaves and terms created; and cell and index bytes written and deleted, on this basis (R9). Deleted counts are reported, never refunded (R6).
+- Four counts per record: cells, cell bytes, indexed cells, and index bytes. They cover user cells only; system cells are fixed-size and charged separately (D2).
+- When details are requested for a write call, its receipt must report cells created, updated and deleted; index joins, leaves and terms created; and cell and index bytes written and deleted, on this basis (R9). Deleted counts are reported, never refunded (R6).
 - Counting per record overcounts popular index terms: the safe direction (R4).
 
 ## D5. Record Shape and Deletion Bound
 
 Meets R10.
 
-By D1, deleting a record costs:
+By D2, deleting a record costs:
 
 ```
-delete cost = w_rec[delete]
+delete cost = admission cost + w_rec[delete]
             + system cell deletes                        (binding, #key, #meta; fixed size)
             + cells         × (w_cell_read + w_cell[delete] + cell_trie_depth  × w_cell_trie_update)
             + indexed cells × (w_idx_read  + w_idx[leave]   + index_trie_depth × w_index_trie_update)
 ```
 
-Every leave costs the same, whether or not it empties the term (D1), and deleted bytes were pre-paid at write (D4). So the cost depends only on the record's counts and is exact at current weights and depth.
+Every leave costs the same, whether or not it empties the term (D2), and deleted bytes were pre-paid at write (D4). A valid delete request carries a fixed-size record key and no cell changes, so its admission cost is fixed by the schedule. The total therefore depends only on the record's counts and is exact at current weights and depth.
 
 - `#meta` (Record Model) holds the four D4 counts.
-- Updated in the same write that changes any count, as a system cell operation (D1).
+- Updated atomically with count changes; every successful patch pays for its read and update (D2).
 - Stores counts, not cost: counts are exact and independent of weights and D3 depth. The maximum deletion cost is computed from them at current weights and depth. Actual deletion may cost less, for example after the database shrinks.
-- System cells are not counted in `#meta`; their deletes are fixed-size system cell operations (D1).
+- System cells are not counted in `#meta`; their deletes are fixed-size system cell operations (D2).
 - Golem DB's ceilings are deployment parameters in `#params`, fixed at genesis: `#maxCellNameLen`, `#maxStrLen`, `#maxBytesLen`, and caps on cells and indexed cells per user record. System records are exempt from the cell caps; they are never deleted.
-- After every `create` and `patch`, the record's resulting counts must stay within the caps. The plan phase checks this (D1); a violation fails the call and writes nothing.
+- After every `create` and `patch`, the record's resulting counts must stay within the caps. The plan phase checks this (D2); a violation fails the call and writes nothing.
 - The cell caps bound a record's maximum deletion cost; the length ceilings bound the size of each write.
 - Caps are on counts and lengths rather than cost, so a weight increase cannot push existing records over a limit.
 
@@ -260,7 +380,7 @@ Meets R5, R8.
 
 Reads are counted, not modeled: nothing on the read path is deferred, so cost accumulates as the work happens and the call aborts when it crosses its budget ([architecture §10](golem-db-architecture.md#read-metering)).
 
-- The counted descent is the reference one, whether or not an implementation short-circuits it (D2).
+- The counted descent is the reference one, whether or not an implementation short-circuits it (D1).
 - Sort comparisons are the exception: modeled as `⌈N log₂ N⌉ × S` from the match count N and S sort terms, so the choice of sort algorithm stays out of the receipt.
 - Resolving an item at a past commit is a flat surcharge, independent of how far back.
 - Range scans charge every index term stepped over, so ranges over attributes with many distinct values pay for their width.
@@ -270,58 +390,147 @@ Reads are counted, not modeled: nothing on the read path is deferred, so cost ac
 
 Meets R6, R7.
 
-- Cost is charged at the call, against its budget, on the branch it names.
-- `OutOfBudget{spent}` reports cost already incurred, including the reads that established the price. A refusal is not free. A write also reports `required`, its full cost, because the plan phase knows it (D1); a read aborts as it goes and cannot.
-- Any cost computation that overflows is treated as `OutOfBudget`.
-- **Failed writes** are charged for the work done in the plan phase (D1), never for writes:
+- Cost is charged at the call, against its budget, using its captured pricing schedule (D8).
+- `OutOfBudget{spent, required?}` reports cost already incurred, including the reads that established the price. A refusal is not free. For a write, `required` is `Some(total)` when planning completed and the full cost is representable, otherwise `None`. A read aborts as it goes and does not report a full required cost.
+- Any cost computation that overflows is treated as `OutOfBudget{spent, required: None}`, including under `Unlimited`. Costs use checked `u64` arithmetic: neither wrapping nor saturation may turn an unrepresentable total into a valid cost.
+- **Failed writes** are charged for the work done in the plan phase (D2), never for writes:
 
   | Failure | Charge |
   | --- | --- |
-  | Admission (malformed input, `Reserved`) | 0 |
-  | Key failure (`AlreadyExists`, `NotFound`) | `w_rec[op]` |
-  | Later check (cap exceeded, invalid value) | `w_rec[op]` + the cell and index reads performed |
-  | `OutOfBudget{spent, required}` | `spent`: `w_rec[op]` + the reads performed, never more than the budget; `required` reports the full cost |
+  | Admission (malformed input, `Reserved`) | Admission work performed, including the check that detects the error |
+  | Key failure (`AlreadyExists`, `NotFound`) | Admission cost + `w_rec[op]` |
+  | Later check (cap exceeded, invalid value) | Admission cost + `w_rec[op]` + the cell and index reads performed |
+  | `OutOfBudget{spent, required?}` | `spent`: completed charged planning steps, never more than a limited budget; `required` is present only after the full cost is established |
 
-  `w_rec[op]` includes work a failed call never reaches, such as the record ID counter; that difference is the penalty for a failed call. Returning a receipt with an error code costs nothing extra.
-- Rollback is free and refunds nothing: it undoes work already paid for. A receipt is a return value, not state, so a later rollback cannot revoke it.
-- Commit is free because it is pre-paid: modeled per-call charges collect the deferred merkleization work in advance.
-- Removing an index term emptied by its last member is free for the same reason: the term's creation paid for it (D1).
+  The key-failure and later-check rows assume the preceding charged steps fit the budget;
+  otherwise the call stops earlier with `OutOfBudget`. If the remaining budget after
+  admission is below `w_rec[op]`, no binding lookup is performed; `spent` is the admission
+  cost and `required` is `None`. `w_rec[op]` includes work a failed
+  call never reaches, such as the record ID counter; that difference is the penalty for
+  a failed call. Returning a receipt with an error code costs nothing extra.
+- Rollback carries no additional charge because operation charges cover undo work, including work confined to memory. It refunds nothing, nor does discarding a branch. A receipt is a return value, not state, so a later rollback cannot revoke it.
+- Commit carries no additional data-plane charge: modeled per-call charges prepay record-induced deferred work, and the host funds block/commit overhead as defined below.
+- Removing an index term emptied by its last member is free for the same reason: the term's creation paid for it (D2).
+
+### Host-Funded Block/Commit Overhead
+
+The host funds commit-level engine overhead outside record-call budgets and receipts:
+the `#roots` insertion, persistence of the final `#alloc` value when changed, their
+history/change-set and trie work, and Superblock head and commit-transaction maintenance
+([design](golem-db-design.md#genesis-and-roots-as-cells)). This applies to every commit,
+including empty and admin commits; it does not depend on collecting record-call charges.
+
+Record-call charges still cover their own cell and index mutations, per-record system
+cells, and associated deferred history and trie work. Host funding does not make that
+work free merely because it is performed at commit. `w_rec[create]` pays for in-memory
+ID allocation, not the final committed allocator update.
+
+For Arkiv, this overhead belongs to the host's block-processing resource budget. The
+host controls commit admission and frequency and bears the overhead even for an empty
+block. How it funds or recovers that cost is host policy, not part of Golem DB's
+per-record pricing schedule.
+
+### Shared Planner and Arkiv Usage Contexts
+
+The write planner represents budgets explicitly:
+
+```
+Budget = Limited(u64) | Unlimited
+```
+
+`Limited(u64::MAX)` is still a finite cap, not a sentinel for `Unlimited`. Unlimited
+removes only the cost cap: validation, deployment limits and arithmetic-overflow checks
+still apply. There is no separate estimation algorithm or force-completion flag.
+
+Arkiv uses this planner in two contexts:
+
+1. **Transaction execution and validation.** Arkiv supplies `Limited(remaining_budget)`
+  in Golem DB cost units. Planning can abort early; only a successful plan is applied.
+  The operation is charged its total cost once, with planning charges already included,
+  or its `spent` cost on failure. A caller cannot select unlimited consensus execution
+  by requesting an estimate.
+2. **`eth_estimateGas` service.** Arkiv may supply `Unlimited` to calculate the full
+  Golem DB write cost without applying the plan. This is a host-authorized estimation
+  facility, not a promise of free or budget-bounded work by Golem DB. Arkiv remains
+  responsible for its gas conversion and non-database costs. A multi-operation estimate
+  that needs earlier writes visible to later ones must simulate them in a disposable
+  branch; inspecting every operation against the unchanged initial state is insufficient.
+
+The estimation host owns resource protection: IP rate limiting, authenticated or paid
+access, or a caller-operated node, supplemented as appropriate by concurrency limits,
+request-size limits and cancellation/timeouts. A host cancellation is not a deterministic
+consensus `OutOfBudget` verdict. An estimate is valid for the inspected state and schedule,
+not a guarantee that a later transaction will have the same cost. Even unlimited planning
+may fail validation or overflow; it does not guarantee a successful estimate.
 
 ## D8. Cost Schedules
 
 Meets R11, R12.
 
-- **Model = code.** Cost structure, counting rules, byte definitions and expected weight names, identified by `modelVersion` ([design §4](golem-db-design/golem-db-design.md#meteringmodel-recordid-32)). D1's structure, D3's depth table and D4's counting are model changes: a new version.
+**Head is authoritative.** Golem DB always knows its current committed `commitNr` from
+the [Superblock head](golem-db-design.md#the-superblock). It holds the active model and
+its complete weight set in memory as a snapshot associated with that committed state.
+At startup or whenever this snapshot is unavailable, reconstruct it from the committed
+`@meteringModel` and `@modelWeight` records at head: select the greatest model version
+whose activation commit is at or before head, validate its weight set, and load it.
+Unsupported active models or invalid weights must prevent serving priced calls, not
+silently fall back to an older schedule. Cache reconstruction does not change a call's
+logical charge.
+
+**Refresh at commit boundaries.** Whenever head advances, check model activation and
+committed weight changes, then publish the corresponding head and pricing snapshot
+together before admitting calls against that head. Never expose a new head with stale
+weights or new weights with the old head. Uncommitted admin writes do not modify the
+active snapshot. After recovery or rewind, rebuild or revalidate the snapshot against
+the restored committed state; a commit number alone is not sufficient cache identity
+if that number can be reused after a rewind.
+
+- **Model = code.** Cost structure, counting rules, byte definitions and expected weight names, identified by `modelVersion` ([design §4](golem-db-design.md#meteringmodel-recordid-32)). D2's structure, D3's depth table and D4's counting are model changes: a new version.
 - **Weights = data.** One `u64` per weight name per model version, stored in `@modelWeight` and versioned by Golem DB's own history.
 - **Install, then activate.** A new model version is installed with its weights and an activation commit ahead of the head; completeness is checked at activation. At most one model is pending.
-- **Patch the active model.** Weight changes take effect at the next commit.
-- **Priced at branch base.** A call uses the schedule at its branch's base commit, recorded as `priced_at`.
-- **Pre-paid work is not re-priced.** Work paid in advance keeps the schedule of the call that paid it: term removal (`w_idx_term_create`), copying bytes into history (write byte weights) and commit. Re-pricing it after a weight change is impractical; if weights rise, the later work is underpaid, bounded to one term removal per term and one copy per byte. Accepted.
+- **Patch the active model.** A weight change staged while head is H takes effect only after the commit containing it succeeds and head becomes H+1. It cannot change pricing mid-branch or before persistence; a failed or discarded change has no effect.
+- **Capture pricing once.** Branch calls retain the pricing snapshot from their base commit; stale branches remain subject to the existing invalidation rules. Calls without a branch capture the current head's snapshot at admission. `priced_at` records that pricing commit, not the data commit being read. A call already in progress keeps its captured snapshot even if head advances.
+- **Historical data does not select historical prices.** A read targeting an old commit uses the same current pricing snapshot as a current-data read admitted at the same head. Each query page is a new call: pinning the data commit does not pin the pricing schedule across pages.
+- **Pre-paid work is not re-priced.** Work paid in advance keeps the schedule of the call that paid it: term removal (`w_idx_term_create`), copying bytes into history (write byte weights) and record-induced deferred commit work. Host-funded block/commit overhead is separate (D7). Re-pricing prepaid work after a weight change is impractical; if weights rise, the later work is underpaid, bounded to one term removal per term and one copy per byte. Accepted.
 - **Authorization is the host's.** Golem DB validates the lifecycle; the host decides who may change weights. A host that changes weights inside its own commits needs branch-scoped admin calls ([mapping §8](arkiv-golem-db-mapping.md#branch-scoped-administration-required-api-extension)).
+
+For example, a model with activation commit 100 becomes active when committed head
+reaches 100. Branch work based on head 99 that produces commit 100 still uses the old
+schedule. Calls admitted at head 100, including reads of commit 20, use the new schedule
+and report `priced_at: 100`. This is a Golem DB committed-head boundary, not an implicit
+rule to switch prices before executing a host block numbered 100.
 
 ## D9. Golem DB Weights
 
 | Weight | Used for | Calibrated from [architecture §10](golem-db-architecture.md#structural-op-classes) op classes |
 | --- | --- | --- |
-| `w_rec[create]`, `w_rec[patch]`, `w_rec[delete]` | Record base cost: admission, binding read, record ID counter, cap check, cell enumeration (D1) | `key_resolve`, `record_create` (allocator part) |
-| `w_cell_read` | Read of a touched cell before its operation (D1) | `cell_read` |
-| `w_cell[create]`, `w_cell[update]`, `w_cell[delete]` | Cell compute (D1) | `cell_write` / `cell_remove`, `cell_history_append`, `cell_changeset_write` |
-| `w_cell_trie_update` | Cell-trie path, per node × `cell_trie_depth` (D1, D3) | `celltrie_path_rewrite` |
-| `w_cell_write_byte` | Cell storage: bytes written, including their later copy into history (D1, D4) | byte term, plus the change-set copy |
-| `w_idx_read` | Read of an index term before join or leave (D1) | `index_seek` |
-| `w_idx[join]`, `w_idx[leave]` | Index membership change (D1) | `index_term_flip`, `secidx_container_rewrite`, `secidx_path_rewrite` |
-| `w_idx_term_create` | Creating a new term, including its later removal (D1) | new index row and index-trie leaf, plus their removal |
-| `w_index_trie_update` | Index-trie path, per node × `index_trie_depth` (D1, D3) | `indextrie_path_rewrite` |
-| `w_idx_write_byte` | Index storage: bytes written (D1, D4) | byte term (new term keys) |
+| `w_admission_base`, `w_admission_entry`, `w_admission_byte` | Fixed request validation, entries inspected and bytes validated, including rejected input (D2) | reference admission validation |
+| `w_rec[create]`, `w_rec[patch]`, `w_rec[delete]` | Record base cost excluding admission: binding read, in-memory record ID counter, cap check, cell enumeration (D2) | `key_resolve`, `record_create` (in-memory allocator part) |
+| `w_cell_read` | Read of a touched cell before its operation (D2) | `cell_read` |
+| `w_cell[create]`, `w_cell[update]`, `w_cell[delete]` | Cell compute (D2) | `cell_write` / `cell_remove`, `cell_history_append`, `cell_changeset_write` |
+| `w_cell_trie_update` | Cell-trie path, per node × `cell_trie_depth` (D2, D3) | `celltrie_path_rewrite` |
+| `w_cell_write_byte` | Cell storage: bytes written, including their later copy into history (D2, D4) | byte term, plus the change-set copy |
+| `w_idx_read` | Read of an index term before join or leave (D2) | `index_seek` |
+| `w_idx[join]`, `w_idx[leave]` | Index membership change (D2) | `index_term_flip`, `secidx_container_rewrite`, `secidx_path_rewrite` |
+| `w_idx_term_create` | Creating a new term, including its later removal (D2) | new index row and index-trie leaf, plus their removal |
+| `w_index_trie_update` | Index-trie path, per node × `index_trie_depth` (D2, D3) | `indextrie_path_rewrite` |
+| `w_idx_write_byte` | Index storage: bytes written (D2, D4) | byte term (new term keys) |
 | Read weights (`key_resolve`, `cell_read`, `index_seek`, `index_scan_step`, `sort_compare`, `bytes_read`, …) | Reads, including scans (D6) | read op classes |
 
 Not weights: the D3 depth table (code, metering model version) and the D5 per-record caps (deployment parameters).
 
 ## Worked Example: Create, Patch, Delete
 
-One record followed through `create`, `patch` and `delete`, priced by D1. It checks that the spec is complete enough to price every step; the gaps it found are T10–T13.
+One record followed through `create`, `patch` and `delete`, priced by D2. It illustrates
+the accounting for these operations; remaining specification gaps are tracked in
+[Review Findings](#todo-review-findings). Receipt details are requested for each call.
 
 **Weights.** Illustrative, not calibrated. Both tries sit at modeled depth 6 (about 10M cells and 10M terms), so every trie path costs 6 × 100 = 600.
+
+Let `A_create`, `A_patch` and `A_delete` denote the admission costs calculated by D2
+for these requests. The tables show the remaining costs; add the corresponding admission
+cost to obtain the full charge. The illustrative `w_rec` values below exclude admission.
+Admission weights and exact reference counts are not assigned numerical values here.
 
 | Weight | Value | Weight | Value |
 | --- | --- | --- | --- |
@@ -350,7 +559,7 @@ The key has no binding. The term `owner` = 0x71C7… is new; the term `status` =
 
 | Operation | Terms | Cost |
 | --- | --- | --- |
-| Record base | `w_rec[create]`: admission, binding read (absent), record ID | 300 |
+| Record base | `w_rec[create]`: binding read (absent), record ID | 300 |
 | Create binding | 350 + 600 + 49 × 2 | 1,048 |
 | Create `#key` | 350 + 600 + 45 × 2 | 1,040 |
 | Create `#meta` | 350 + 600 + 46 × 2 | 1,042 |
@@ -359,7 +568,9 @@ The key has no binding. The term `owner` = 0x71C7… is new; the term `status` =
 | Create `payload` | 350 + 600 + 272 × 2 | 1,494 |
 | `owner` joins a new term | 100 + 400 + 650 + 600 + 27 × 2 | 1,804 |
 | `status` joins "active" | 100 + 650 + 600 + 14 × 2 | 1,378 |
-| **Total** | | **10,116** |
+| **Subtotal excluding admission** | | **10,116** |
+
+Full cost: `A_create + 10,116`.
 
 No cell reads: the record is new. Receipt: 3 cells created, 2 index joins, 1 term created, 327 cell bytes and 41 index bytes written. `#meta` afterwards: 3 cells, 327 cell bytes, 2 indexed cells, 41 index bytes.
 
@@ -375,11 +586,29 @@ No cell reads: the record is new. Receipt: 3 cells created, 2 index joins, 1 ter
 | Update `payload` | 100 + 350 + 600 + 116 × 2 | 1,282 |
 | `status` leaves "active" | 100 + 650 + 600 | 1,350 |
 | `status` joins "closed" | 100 + 650 + 600 + 14 × 2 | 1,378 |
-| **Total** | | **6,444** |
+| **Subtotal excluding admission** | | **6,444** |
+
+Full cost: `A_patch + 6,444`.
 
 Receipt: 2 cells updated, 1 index leave, 1 index join; 137 cell bytes written and 293 deleted; 14 index bytes written and 14 deleted. Deleted bytes are reported, not charged. `#meta` afterwards: 3 cells, 171 cell bytes, 2 indexed cells, 41 index bytes.
 
-**The same patch with a budget of 5,000** fails in the plan phase with `OutOfBudget{spent: 700, required: 6,444}`. `spent` is `w_rec[patch]` (200) plus the reads performed: `#meta` (100), two cells (200) and two index terms (200). Nothing is written.
+**The same patch with a budget of `A_patch + 5,000`** fails in the plan phase with
+`OutOfBudget{spent: A_patch + 700, required: Some(A_patch + 6,444)}`. Beyond admission,
+`spent` is `w_rec[patch]` (200) plus the reads performed: `#meta` (100), two cells (200)
+and two index terms (200). Nothing is written.
+
+**With `Limited(A_patch + 250)`**, admission completes and the binding lookup costs
+200; the next `#meta` read would cost 100, so it is not performed. The result is
+`OutOfBudget{spent: A_patch + 200, required: None}`. With `Limited(A_patch + 6,444)`,
+the patch succeeds at the exact budget. With `Unlimited`, the same planner returns
+`A_patch + 6,444` for estimation without applying the patch.
+
+**Rejected input also costs.** If validation finds an invalid cell name after inspecting
+some entries and bytes, the call returns `InvalidArgument` with
+`spent = w_admission_base + entries inspected × w_admission_entry + bytes validated × w_admission_byte`.
+The counts include the work that detected the invalid name, but not uninspected input.
+No binding lookup or write is charged. If the next validation step cannot be funded,
+the call instead stops before that step with `OutOfBudget` and no `required` total.
 
 ### Delete
 
@@ -394,22 +623,22 @@ Receipt: 2 cells updated, 1 index leave, 1 index join; 137 cell bytes written an
 | Read and delete `owner`, `status`, `payload` | 3 × (100 + 350 + 600) | 3,150 |
 | `owner` leaves; term emptied and removed | 100 + 650 + 600 (removal pre-paid) | 1,350 |
 | `status` leaves "closed" | 100 + 650 + 600 | 1,350 |
-| **Total** | | **9,150** |
+| **Subtotal excluding admission** | | **9,150** |
+
+Full cost: `A_delete + 9,150`.
 
 Receipt: 3 cells deleted, 2 index leaves; 171 cell bytes and 41 index bytes deleted, reported only.
 
 ### What the Example Shows
 
-- **D5 holds.** From `#meta` alone (3 cells, 2 indexed cells), D5 gives 250 + 3,050 + 3 × 1,050 + 2 × 1,350 = 9,150, the delete's actual cost. Byte counts are not needed.
-- **Structure dominates bytes.** The 256-byte payload adds 544 of the create's 10,116 (about 5%). The one-off byte charge is small by design; a host that prices storage over time adds that on top.
-- **Deleting costs about as much as creating** (9,150 against 10,116), as architecture §10 predicts: every row, trie path and index entry has to be touched either way.
-- **An index value change dominates a small patch.** Changing `status` costs 3,820, of which 2,728 is the index leave and join: two terms, two trie paths.
-- **A record's fixed cost** is 3,430 on `create` (base plus three system cells) and 3,300 on `delete`, before any user cell.
-- **Gaps found:** T10–T13.
+- **D5 holds.** From `#meta` (3 cells, 2 indexed cells) and the fixed admission cost of a valid delete, D5 gives `A_delete + 250 + 3,050 + 3 × 1,050 + 2 × 1,350 = A_delete + 9,150`. Byte counts are not needed.
+- **Structure dominates the non-admission subtotal.** The payload's write-byte term contributes 544 of the create subtotal's 10,116 (about 5%). Any admission byte processing is charged separately; a host that prices storage over time adds that on top.
+- **Deleting and creating have similar non-admission costs** (9,150 against 10,116): every row, trie path and index entry has to be touched either way. Their full costs also include their respective admission charges.
+- **An index value change dominates a small patch's non-admission cell work.** Changing `status` costs 3,820 excluding admission and record-level overhead, of which 2,728 is the index leave and join: two terms, two trie paths.
+- **A record's fixed non-admission cost** is 3,430 on `create` (base plus three system cells) and 3,300 on `delete`, before any user cell. Admission is added separately.
 
 ## Open Questions
 
 1. **Is the D3 depth table worth it?** Realistic depths span 4–7 nodes, more likely 4–6. Is that range worth the extra code and a more complex pricing story for users, compared with one fixed depth folded into the weights?
-2. **Depth table as code or weights?** [Design §4](golem-db-design/golem-db-design.md#meteringmodel-recordid-32) expresses tunable constants such as a modeled depth as named weights. Should D3's thresholds and depths be weights, tunable without a new model version?
-3. **Optional receipt details.** Does "optionally" in R9 mean opt-in per call, or that an implementation may omit them? Arkiv needs them ([Arkiv Fees](arkiv-fees.md) A1, A3).
-4. **Full-node history window.** How many commits do full nodes retain? It bounds full-node storage and calibrates the write byte weights.
+2. **Depth table as code or weights?** [Design §4](golem-db-design.md#meteringmodel-recordid-32) expresses tunable constants such as a modeled depth as named weights. Should D3's thresholds and depths be weights, tunable without a new model version?
+3. **Full-node history window.** How many commits do full nodes retain? It bounds full-node storage and calibrates the write byte weights.
