@@ -1,20 +1,17 @@
-use std::collections::BTreeMap;
-
 use golemdb_merkle::{BranchDomain, Hash, HashProvider, LeafRef, RootRef, Trie};
 use golemdb_storage::{ReadTransaction, StorageError, WriteTransaction};
 
-use crate::{Bitmap, BitmapContainer, IndexError, Result, path, tables};
+use crate::{BITMAP_TRIE_PATH_BYTES, Bitmap, BitmapContainer, IndexError, Result, path, tables};
 
-pub(crate) struct BitmapTrie<'h, H: HashProvider + ?Sized> {
-    trie: Trie<'h, H, 6>,
+pub(crate) struct BitmapTrie<'h, H: HashProvider> {
+    trie: Trie<'h, H, BITMAP_TRIE_PATH_BYTES>,
     hasher: &'h H,
 }
 
-impl<'h, H: HashProvider + ?Sized> BitmapTrie<'h, H> {
+impl<'h, H: HashProvider> BitmapTrie<'h, H> {
     pub(crate) fn new(hasher: &'h H) -> Self {
         Self {
-            trie: Trie::new(tables::BITMAP_TRIE, BranchDomain::Bitmap, hasher)
-                .expect("six-byte paths are valid"),
+            trie: Trie::new(tables::BITMAP_TRIE, BranchDomain::Bitmap, hasher),
             hasher,
         }
     }
@@ -26,7 +23,11 @@ impl<'h, H: HashProvider + ?Sized> BitmapTrie<'h, H> {
         Ok(BitmapContainer::decode(bytes)?)
     }
 
-    fn load(&self, tx: &impl ReadTransaction, leaf: LeafRef<6>) -> Result<BitmapContainer> {
+    fn load(
+        &self,
+        tx: &impl ReadTransaction,
+        leaf: LeafRef<BITMAP_TRIE_PATH_BYTES>,
+    ) -> Result<BitmapContainer> {
         let bytes = tx
             .get(tables::BITMAP_CONTAINER, &leaf.hash)?
             .ok_or(IndexError::Corruption("missing container"))?;
@@ -44,7 +45,7 @@ impl<'h, H: HashProvider + ?Sized> BitmapTrie<'h, H> {
         &self,
         tx: &impl ReadTransaction,
         hash: Hash,
-    ) -> Result<(RootRef<6>, Option<BitmapContainer>)> {
+    ) -> Result<(RootRef<BITMAP_TRIE_PATH_BYTES>, Option<BitmapContainer>)> {
         if hash == self.hasher.hash(&[]) {
             return Err(IndexError::Corruption("empty bitmap root in Index row"));
         }
@@ -77,18 +78,21 @@ impl<'h, H: HashProvider + ?Sized> BitmapTrie<'h, H> {
         Ok(Bitmap::from_containers(containers)?)
     }
 
-    /// Each offset has its final desired membership, after resolving input order.
+    /// Changes must be sorted by (container path, offset), with one final desired
+    /// membership per posting. The index writer sorts and deduplicates the batch.
+    /// Consecutive changes share one container load and finalization.
     pub(crate) fn apply(
         &self,
         tx: &mut impl WriteTransaction,
         before: Option<Hash>,
-        changes: BTreeMap<u64, BTreeMap<u16, bool>>,
+        changes: impl IntoIterator<Item = (u64, u16, bool)>,
     ) -> Result<Option<Hash>> {
         let (mut root, mut cached) = match before {
             Some(hash) => self.reopen(tx, hash)?,
             None => (RootRef::Empty, None),
         };
-        for (hi, offsets) in changes {
+        let mut changes = changes.into_iter().peekable();
+        while let Some(&(hi, _, _)) = changes.peek() {
             let path = path::path_bytes(hi)?;
             let old = self.trie.get(tx, root, &path)?;
             let mut container = match old {
@@ -99,7 +103,7 @@ impl<'h, H: HashProvider + ?Sized> BitmapTrie<'h, H> {
                 None => BitmapContainer::empty(hi)?,
             };
             let mut changed = false;
-            for (offset, present) in offsets {
+            while let Some((_, offset, present)) = changes.next_if(|&(path, _, _)| path == hi) {
                 changed |= if present {
                     container.insert(offset)
                 } else {

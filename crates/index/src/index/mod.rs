@@ -17,13 +17,13 @@ pub use writer::{IndexUpdate, PostingChange, TermRootChange};
 /// Index operations over caller-owned transactions. Use the same hash provider
 /// and snapshot for the flat table, both tries, and the supplied root. Errors
 /// during `apply` require aborting the transaction. Publish roots only on commit.
-pub struct Index<'h, H: HashProvider + ?Sized> {
+pub struct Index<'h, H: HashProvider> {
     hasher: &'h H,
     bitmaps: BitmapTrie<'h, H>,
     trie: IndexTrie<'h, H>,
 }
 
-impl<'h, H: HashProvider + ?Sized> Index<'h, H> {
+impl<'h, H: HashProvider> Index<'h, H> {
     pub fn new(hasher: &'h H) -> Self {
         Self {
             hasher,

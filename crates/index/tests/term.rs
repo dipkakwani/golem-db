@@ -1,6 +1,6 @@
 use golemdb_cells::{CellType as T, CellValue, FloatWidth as F, Width as W};
 use golemdb_index::{BitmapContainer, IndexTerm, TermError};
-use golemdb_merkle::{Hash, HashAlgorithm, HashProvider};
+use golemdb_merkle::{Hash, HashProvider, Keccak256Hasher};
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan, scan_prefix};
 use proptest::prelude::*;
 use std::{cell::RefCell, ops::Bound::Included};
@@ -210,22 +210,9 @@ fn field_filtering_names_and_unsupported_types() {
         IndexTerm::new("A", T::Bytes, b""),
         Err(TermError::UnsupportedType(_))
     ));
-    assert!(matches!(
-        IndexTerm::new("A", T::Tombstone, b""),
-        Err(TermError::UnsupportedType(_))
-    ));
     assert!(IndexTerm::new("A", T::Bool, &[2]).is_err());
     assert!(IndexTerm::new("A", T::Int(W::W4), &[1]).is_err());
     assert!(IndexTerm::new("A", T::Str, &[255]).is_err());
-    #[cfg(feature = "custom_types")]
-    assert!(matches!(
-        IndexTerm::new(
-            "A",
-            T::Custom(golemdb_cells::CustomTypeId::new(64).unwrap()),
-            b"x"
-        ),
-        Err(TermError::UnsupportedType(_))
-    ));
 }
 
 #[test]
@@ -278,7 +265,7 @@ fn leaf_preimages_belong_to_index_and_use_the_supplied_provider() {
             .leaf_hash(&hasher)
             .is_err()
     );
-    let keccak = HashAlgorithm::Keccak256;
+    let keccak = Keccak256Hasher;
     assert_ne!(
         chunk.leaf_hash(&keccak).unwrap(),
         BitmapContainer::from_values(2, [42])

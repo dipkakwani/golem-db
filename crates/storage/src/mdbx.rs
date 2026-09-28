@@ -253,9 +253,6 @@ impl WriteTransaction for MdbxWriteTransaction<'_> {
     fn commit(self) -> Result<()> {
         self.inner.commit().map(|_| ()).map_err(backend)
     }
-    fn abort(self) {
-        drop(self);
-    }
 }
 
 enum Position {

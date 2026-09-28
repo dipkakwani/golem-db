@@ -24,6 +24,13 @@ pub struct BranchNodeCompact<const N: usize> {
 impl<const N: usize> BranchNodeCompact<N> {
     /// `prefix` is packed high nibble first, relative to this branch's depth.
     /// Hashes and leaf paths follow ascending occupied slots in their masks.
+    /// Path widths outside 1..=32 bytes fail at compile time; malformed branch
+    /// contents still return runtime errors.
+    ///
+    /// ```compile_fail,E0080
+    /// use golemdb_merkle::BranchNodeCompact;
+    /// let _ = BranchNodeCompact::<33>::new(vec![], 0, 3, 3, vec![[0; 32]; 2], vec![]);
+    /// ```
     pub fn new(
         prefix: Vec<u8>,
         prefix_len: u8,
@@ -32,7 +39,12 @@ impl<const N: usize> BranchNodeCompact<N> {
         child_hashes: Vec<Hash>,
         leaf_paths: Vec<[u8; N]>,
     ) -> Result<Self> {
-        path::check_width::<N>()?;
+        const {
+            assert!(
+                N >= 1 && N <= 32,
+                "Merkle paths must contain between 1 and 32 bytes"
+            )
+        };
         if prefix_len as usize >= 2 * N || prefix.len() != (prefix_len as usize).div_ceil(2) {
             return Err(MerkleError::InvalidNode("invalid prefix length"));
         }
@@ -102,7 +114,7 @@ impl<const N: usize> BranchNodeCompact<N> {
         bytes
     }
 
-    pub fn hash(&self, domain: BranchDomain, hasher: &(impl HashProvider + ?Sized)) -> Hash {
+    pub fn hash(&self, domain: BranchDomain, hasher: &impl HashProvider) -> Hash {
         hasher.hash_parts(&[&[domain as u8], &self.hash_payload()])
     }
 
@@ -116,8 +128,18 @@ impl<const N: usize> BranchNodeCompact<N> {
 
     /// Strict decoding: rejects trailing bytes, bad masks and nonzero padding.
     /// Depth and leaf routing are checked when the trie reads this branch.
+    ///
+    /// ```compile_fail,E0080
+    /// use golemdb_merkle::BranchNodeCompact;
+    /// let _ = BranchNodeCompact::<0>::decode(&[]);
+    /// ```
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        path::check_width::<N>()?;
+        const {
+            assert!(
+                N >= 1 && N <= 32,
+                "Merkle paths must contain between 1 and 32 bytes"
+            )
+        };
         let bad = || MerkleError::InvalidNode("invalid encoded length");
         let prefix_len = *bytes.first().ok_or_else(bad)?;
         let end = 1 + (prefix_len as usize).div_ceil(2);

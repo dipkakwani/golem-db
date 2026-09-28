@@ -108,12 +108,12 @@ impl IndexTerm {
     }
 
     /// Full 32-byte IndexTrie routing path (the term itself has no hash domain).
-    pub fn routing_path(&self, hasher: &(impl HashProvider + ?Sized)) -> Hash {
+    pub fn routing_path(&self, hasher: &impl HashProvider) -> Hash {
         hasher.hash(&self.0)
     }
 
     /// `H(0x02 || complete_term_path || bitmap_root)`.
-    pub fn leaf_hash(&self, bitmap_root: &Hash, hasher: &(impl HashProvider + ?Sized)) -> Hash {
+    pub fn leaf_hash(&self, bitmap_root: &Hash, hasher: &impl HashProvider) -> Hash {
         hasher.hash_parts(&[&[0x02], &self.routing_path(hasher), bitmap_root])
     }
 }
@@ -189,7 +189,7 @@ impl fmt::Display for TermError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidName => f.write_str("invalid attribute name"),
-            Self::UnsupportedType(ty) => write!(f, "no ordered index codec for {}", ty.name()),
+            Self::UnsupportedType(ty) => write!(f, "no ordered index codec for {ty:?}"),
             Self::Value(error) => write!(f, "invalid index value: {error}"),
             Self::NaN => f.write_str("NaN cannot be indexed"),
             Self::InvalidEncoding => f.write_str("invalid or noncanonical index term"),

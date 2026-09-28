@@ -4,6 +4,27 @@ use std::{error::Error, fmt, path::Path};
 
 /// Initial startup configuration. Later the engine will obtain the selected
 /// algorithm from genesis/persisted protocol metadata instead of this file.
+/// Match the identifier once before entering the processing loop; each runner
+/// instantiation uses a compile-time-known provider. The configuration is not a
+/// runtime-switching provider. Changing algorithms requires a fresh/rebuilt
+/// database; persisting and checking the identifier belongs to the future engine.
+///
+/// ```
+/// use golemdb_merkle::{Blake3Hasher, Hash, HashAlgorithm, HashConfig, HashProvider, Keccak256Hasher};
+///
+/// // The future engine's processing loop belongs inside this generic function.
+/// fn run<H: HashProvider>(hasher: H) -> Hash {
+///     hasher.hash(b"example")
+/// }
+/// let config = HashConfig::from_yaml("hash_function: blake3")?;
+/// let hash = match config.hash_function {
+///     HashAlgorithm::Keccak256 => run(Keccak256Hasher),
+///     HashAlgorithm::Blake3 => run(Blake3Hasher),
+/// };
+/// assert_eq!(hash, Blake3Hasher.hash(b"example"));
+/// # Ok::<(), golemdb_merkle::ConfigError>(())
+/// ```
+///
 /// Deserialization requires the field explicitly, rejecting typos and duplicates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

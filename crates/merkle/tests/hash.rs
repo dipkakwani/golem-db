@@ -1,4 +1,4 @@
-use golemdb_merkle::{HashAlgorithm, HashConfig, HashProvider};
+use golemdb_merkle::{Blake3Hasher, HashAlgorithm, HashConfig, HashProvider, Keccak256Hasher};
 
 fn hex(hash: [u8; 32]) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
@@ -6,7 +6,7 @@ fn hex(hash: [u8; 32]) -> String {
 
 #[test]
 fn keccak_known_answers_and_chunking() {
-    let hash = HashAlgorithm::Keccak256;
+    let hash = Keccak256Hasher;
     // Standard Keccak-256 vectors. SHA3-256 has different padding and fails these.
     assert_eq!(
         hex(hash.hash(b"")),
@@ -53,4 +53,57 @@ fn configuration_never_silently_falls_back() {
             "unexpectedly accepted {yaml:?}"
         );
     }
+}
+
+#[test]
+fn blake3_known_answers_and_chunking() {
+    let hash = Blake3Hasher;
+    assert_eq!(
+        hex(hash.hash(b"")),
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    );
+    assert_eq!(
+        hex(hash.hash(b"abc")),
+        "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+    );
+    assert_eq!(hash.hash_parts(&[]), hash.hash(b""));
+    assert_eq!(hash.hash_parts(&[b"a", b"", b"bc"]), hash.hash(b"abc"));
+    // Cross compression-block and tree-chunk boundaries with fragmented input.
+    let bytes = (0..4097).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+    for size in [1, 63, 64, 65, 1023, 1024, 1025] {
+        let parts = bytes.chunks(size).collect::<Vec<_>>();
+        assert_eq!(hash.hash_parts(&parts), hash.hash(&bytes));
+    }
+    assert_ne!(hash.hash(b"abc"), Keccak256Hasher.hash(b"abc"));
+}
+
+#[test]
+fn blake3_configuration_selects_concrete_provider() {
+    fn run<H: HashProvider>(hasher: H) -> [u8; 32] {
+        hasher.hash(b"abc")
+    }
+    for (yaml, expected, digest) in [
+        (
+            "hash_function: keccak-256",
+            HashAlgorithm::Keccak256,
+            Keccak256Hasher.hash(b"abc"),
+        ),
+        (
+            "hash_function: blake3",
+            HashAlgorithm::Blake3,
+            Blake3Hasher.hash(b"abc"),
+        ),
+    ] {
+        let config = HashConfig::from_yaml(yaml).unwrap();
+        assert_eq!(config.hash_function, expected);
+        let actual = match config.hash_function {
+            HashAlgorithm::Keccak256 => run(Keccak256Hasher),
+            HashAlgorithm::Blake3 => run(Blake3Hasher),
+        };
+        assert_eq!(actual, digest);
+    }
+    assert_eq!(
+        HashConfig::default().hash_function,
+        HashAlgorithm::Keccak256
+    );
 }

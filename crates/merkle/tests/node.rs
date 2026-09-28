@@ -1,11 +1,11 @@
 use golemdb_merkle::{
-    BranchDomain, BranchNodeCompact, HashAlgorithm, HashProvider, LeafRef, MerkleError, RootRef,
+    BranchDomain, BranchNodeCompact, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef,
     Trie,
 };
 use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction};
 use proptest::prelude::*;
 
-const HASH: HashAlgorithm = HashAlgorithm::Keccak256;
+const HASH: Keccak256Hasher = Keccak256Hasher;
 const TABLE: Table = Table("Branches");
 
 fn node() -> BranchNodeCompact<6> {
@@ -116,15 +116,6 @@ fn malformed_node_encodings_are_rejected() {
     );
     assert!(BranchNodeCompact::<6>::new(vec![], 0, 3, 0, vec![[0; 32]], vec![[0; 6]; 2]).is_err());
     assert!(BranchNodeCompact::<6>::new(vec![], 0, 3, 0, vec![[0; 32]; 2], vec![[0; 6]]).is_err());
-    assert!(matches!(
-        Trie::<_, 0>::new(TABLE, BranchDomain::Bitmap, &HASH),
-        Err(MerkleError::InvalidPathWidth)
-    ));
-    assert!(matches!(
-        Trie::<_, 33>::new(TABLE, BranchDomain::Bitmap, &HASH),
-        Err(MerkleError::InvalidPathWidth)
-    ));
-    assert!(BranchNodeCompact::<0>::decode(&[0; 70]).is_err());
 }
 
 proptest! {
@@ -138,7 +129,7 @@ proptest! {
 #[test]
 fn corrupt_hash_and_leaf_routing_fail_on_reads_and_mutations() {
     let db = MemoryDatabase::new();
-    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH).unwrap();
+    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH);
     let mut tx = db.begin_write().unwrap();
     let node = node();
     let hash = node.hash(BranchDomain::Bitmap, &HASH);
@@ -178,7 +169,7 @@ fn corrupt_hash_and_leaf_routing_fail_on_reads_and_mutations() {
 #[test]
 fn collisions_check_complete_stored_bytes_and_never_overwrite() {
     let db = MemoryDatabase::new();
-    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH).unwrap();
+    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH);
     let node = node();
     let hash = node.hash(BranchDomain::Bitmap, &HASH);
     let mut tx = db.begin_write().unwrap();
@@ -203,7 +194,7 @@ fn collisions_check_complete_stored_bytes_and_never_overwrite() {
 #[test]
 fn branch_depth_is_checked_in_context() {
     let db = MemoryDatabase::new();
-    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH).unwrap();
+    let trie = Trie::<_, 6>::new(TABLE, BranchDomain::Bitmap, &HASH);
     let mut tx = db.begin_write().unwrap();
     let child =
         BranchNodeCompact::<6>::new(vec![0; 5], 10, 3, 3, vec![[0; 32], [1; 32]], vec![]).unwrap();

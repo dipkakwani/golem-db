@@ -4,12 +4,12 @@ use std::{cell::RefCell, collections::BTreeMap};
 
 use golemdb_cells::CellType;
 use golemdb_index::{Index, IndexError, IndexTerm, PostingChange, tables};
-use golemdb_merkle::{HashAlgorithm, RootRef};
+use golemdb_merkle::{Keccak256Hasher, RootRef};
 use golemdb_storage::{
     Database, ReadTransaction, Result, StorageError, Table, WriteTransaction, scan_prefix,
 };
 
-const HASH: HashAlgorithm = HashAlgorithm::Keccak256;
+const HASH: Keccak256Hasher = Keccak256Hasher;
 fn term(value: u8) -> IndexTerm {
     IndexTerm::new("tag", CellType::Str, &[value]).unwrap()
 }

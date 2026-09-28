@@ -6,12 +6,14 @@ use std::{
 };
 
 use golemdb_cells::CellType;
-use golemdb_index::{BitmapContainer, Index, IndexError, IndexTerm, PostingChange, tables};
-use golemdb_merkle::{BranchDomain, Hash, HashAlgorithm, HashProvider, LeafRef, RootRef, Trie};
+use golemdb_index::{
+    BitmapContainer, INDEX_TRIE_PATH_BYTES, Index, IndexError, IndexTerm, PostingChange, tables,
+};
+use golemdb_merkle::{BranchDomain, Hash, HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie};
 use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, WriteTransaction, scan_prefix};
 use proptest::prelude::*;
 
-const HASH: HashAlgorithm = HashAlgorithm::Keccak256;
+const HASH: Keccak256Hasher = Keccak256Hasher;
 fn term(value: u8) -> IndexTerm {
     IndexTerm::new("tag", CellType::Str, &[b'a' + value]).unwrap()
 }
@@ -42,7 +44,7 @@ fn root_for(tx: &impl ReadTransaction, t: &IndexTerm) -> Option<Hash> {
 // Compare both commitments to a fresh rebuild, not just flat query results.
 fn assert_state(
     tx: &impl ReadTransaction,
-    root: RootRef<32>,
+    root: RootRef<INDEX_TRIE_PATH_BYTES>,
     expected: &BTreeMap<IndexTerm, BTreeSet<u64>>,
 ) {
     let index = Index::new(&HASH);
@@ -71,7 +73,8 @@ fn assert_state(
         .collect::<Vec<_>>();
     assert_eq!(actual_terms, expected.keys().cloned().collect::<Vec<_>>());
     // Independently verify that each flat row is committed in the top trie.
-    let trie = Trie::<_, 32>::new(tables::INDEX_TRIE, BranchDomain::Index, &HASH).unwrap();
+    let trie =
+        Trie::<_, INDEX_TRIE_PATH_BYTES>::new(tables::INDEX_TRIE, BranchDomain::Index, &HASH);
     let mut leaves = expected
         .keys()
         .map(|term| {
@@ -98,7 +101,9 @@ fn empty_singleton_branches_and_last_posting_removal() {
     let mut tx = db.begin_write().unwrap();
     let t = term(0);
     assert_eq!(
-        index.reopen(&tx, RootRef::<32>::Empty.hash(&HASH)).unwrap(),
+        index
+            .reopen(&tx, RootRef::<INDEX_TRIE_PATH_BYTES>::Empty.hash(&HASH))
+            .unwrap(),
         RootRef::Empty
     );
     assert_eq!(index.bitmap(&tx, &t).unwrap(), None);

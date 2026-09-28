@@ -5,24 +5,19 @@
 //! and configurable hashing. Empty roots hash the empty byte string; singleton
 //! roots use their leaf digest directly. Owners retain [`RootRef`] metadata.
 //!
-//! ```
-//! use golemdb_merkle::{HashConfig, HashProvider};
-//! let config = HashConfig::from_yaml("hash_function: keccak-256")?;
-//! let hash = config.hash_function;
-//! assert_eq!(hash.hash(b"abc"), hash.hash_parts(&[b"a", b"bc"]));
-//! # Ok::<(), golemdb_merkle::ConfigError>(())
-//! ```
+//! Select a concrete provider once from [`HashConfig`] at startup. The enum is
+//! only a configuration identifier; it cannot be passed as a hash provider.
 //!
 //! The caller owns the transaction and leaf hashing. This illustrative leaf
 //! preimage includes the full path; production owners supply their own codecs.
 //!
 //! ```
-//! use golemdb_merkle::{BranchDomain, HashAlgorithm, HashProvider, LeafRef, RootRef, Trie};
+//! use golemdb_merkle::{BranchDomain, Keccak256Hasher, HashProvider, LeafRef, RootRef, Trie};
 //! use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 //!
 //! let db = MemoryDatabase::new();
-//! let hash = HashAlgorithm::Keccak256;
-//! let trie = Trie::<_, 6>::new(Table("ExampleBranches"), BranchDomain::Bitmap, &hash)?;
+//! let hash = Keccak256Hasher;
+//! let trie = Trie::<_, 6>::new(Table("ExampleBranches"), BranchDomain::Bitmap, &hash);
 //! let mut tx = db.begin_write()?;
 //! let mut root = RootRef::Empty;
 //! for path in [[0; 6], [1; 6]] {
@@ -45,6 +40,6 @@ mod trie;
 
 pub use config::{ConfigError, HashConfig};
 pub use error::{MerkleError, Result};
-pub use hash::{Hash, HashAlgorithm, HashProvider};
+pub use hash::{Blake3Hasher, Hash, HashAlgorithm, HashProvider, Keccak256Hasher};
 pub use node::{BranchDomain, BranchNodeCompact};
 pub use trie::{LeafRef, RootRef, Trie, Walk};

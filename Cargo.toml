@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cells"]
+members = ["crates/cells", "crates/storage", "crates/merkle", "crates/index"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,9 @@ license = "MIT"
 [workspace.dependencies]
 # Internal crates, referenced by member crates as `{ workspace = true }`.
 golemdb-cells = { path = "crates/cells", version = "0.1.0" }
+golemdb-storage = { path = "crates/storage", version = "0.1.0" }
+golemdb-merkle = { path = "crates/merkle", version = "0.1.0" }
+golemdb-index = { path = "crates/index", version = "0.1.0" }
 
 # Common external dependencies.
 anyhow = "1"

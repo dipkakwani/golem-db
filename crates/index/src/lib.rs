@@ -12,11 +12,11 @@
 //! ```
 //! use golemdb_cells::CellType;
 //! use golemdb_index::{Index, IndexTerm, PostingChange};
-//! use golemdb_merkle::{HashAlgorithm, RootRef};
+//! use golemdb_merkle::{Keccak256Hasher, RootRef};
 //! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
 //!
 //! let db = MemoryDatabase::new();
-//! let hasher = HashAlgorithm::Keccak256;
+//! let hasher = Keccak256Hasher;
 //! let index = Index::new(&hasher);
 //! let term = IndexTerm::new("color", CellType::Str, b"blue")?;
 //! let mut tx = db.begin_write()?;
@@ -34,8 +34,8 @@
 //! ```
 //! use golemdb_cells::{CellType, Width};
 //! use golemdb_index::{BitmapContainer, IndexTerm};
-//! use golemdb_merkle::HashConfig;
-//! let hasher = HashConfig::from_yaml("hash_function: keccak-256")?.hash_function;
+//! use golemdb_merkle::Keccak256Hasher;
+//! let hasher = Keccak256Hasher;
 //! let term = IndexTerm::new("Price", CellType::Int(Width::W4), &100i32.to_be_bytes())?;
 //! let chunk = BitmapContainer::from_values(0, [64, 65])?;
 //! // A singleton BitmapTrie's root is its only container's leaf hash.
@@ -61,8 +61,15 @@ pub use error::{BitmapError, IndexError, Result};
 pub use index::{Index, IndexUpdate, PostingChange, TermRootChange, TermScan};
 pub use term::{IndexTerm, TermError};
 
+/// IndexTrie routes by a complete term digest (32 bytes).
+/// This is a byte width, not the compressed trie's depth.
+pub const INDEX_TRIE_PATH_BYTES: usize = size_of::<golemdb_merkle::Hash>();
+
+/// BitmapTrie routes by the high 48 bits of a record ID (6 bytes).
+/// A hexary path has two digits per byte, so its maximum depth is 12.
+pub const BITMAP_TRIE_PATH_BYTES: usize = PATH_BITS as usize / 8;
+
 pub(crate) const PATH_BITS: u8 = 48;
-pub(crate) const PATH_BYTES: usize = PATH_BITS as usize / 8;
-pub(crate) const PATH_BYTE_OFFSET: usize = 8 - PATH_BYTES;
+pub(crate) const PATH_BYTE_OFFSET: usize = 8 - BITMAP_TRIE_PATH_BYTES;
 pub(crate) const MAX_PATH: u64 = (1 << PATH_BITS) - 1;
 pub(crate) const CHUNK_BITS: u8 = 16;

@@ -1,2 +1,2 @@
 # Initial protocol choice; later supplied by genesis/persisted engine metadata.
-hash_function: keccak-256
+hash_function: keccak-256 # or blake3; changing it requires a fresh/rebuilt database

@@ -7,8 +7,6 @@ pub enum MerkleError {
     Storage(#[from] StorageError),
     #[error("invalid Merkle branch: {0}")]
     InvalidNode(&'static str),
-    #[error("Merkle paths must contain between 1 and 32 bytes")]
-    InvalidPathWidth,
     #[error("missing Merkle branch {0:02x?}")]
     MissingBranch(Hash),
     #[error("Merkle branch does not match its content hash")]

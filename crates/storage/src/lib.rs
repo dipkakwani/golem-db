@@ -102,6 +102,8 @@ pub trait ReadCursor {
 /// self`. This is an API borrowing rule, not a restriction on concurrent readers.
 ///
 /// `AlreadyExists` is recoverable; callers should abort on other write errors.
+/// Implementations must discard pending changes and release the transaction
+/// when dropped without committing.
 pub trait WriteTransaction: ReadTransaction {
     /// Insert or replace a row, creating the table transactionally if needed.
     fn put(&mut self, table: Table, key: &[u8], value: &[u8]) -> Result<()>;
@@ -112,5 +114,11 @@ pub trait WriteTransaction: ReadTransaction {
     /// without creating it.
     fn delete(&mut self, table: Table, key: &[u8]) -> Result<bool>;
     fn commit(self) -> Result<()>;
-    fn abort(self);
+    /// Discard pending changes and release the transaction immediately.
+    /// Dropping an uncommitted transaction has the same effect.
+    fn abort(self)
+    where
+        Self: Sized,
+    {
+    }
 }

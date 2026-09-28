@@ -4,12 +4,16 @@ use golemdb_merkle::{Hash, HashProvider, RootRef};
 use golemdb_storage::{ReadCursor, ReadTransaction, Scan, scan, scan_prefix};
 
 use super::Index;
-use crate::{Bitmap, IndexTerm, Result, index_trie::decode_root, tables};
+use crate::{Bitmap, INDEX_TRIE_PATH_BYTES, IndexTerm, Result, index_trie::decode_root, tables};
 
-impl<H: HashProvider + ?Sized> Index<'_, H> {
+impl<H: HashProvider> Index<'_, H> {
     /// Reconstruct current root metadata. Singleton recovery uses the flat table
     /// from this snapshot. This does not audit all descendants of a branch root.
-    pub fn reopen(&self, tx: &impl ReadTransaction, hash: Hash) -> Result<RootRef<32>> {
+    pub fn reopen(
+        &self,
+        tx: &impl ReadTransaction,
+        hash: Hash,
+    ) -> Result<RootRef<INDEX_TRIE_PATH_BYTES>> {
         self.trie.reopen(tx, hash)
     }
 
@@ -56,13 +60,13 @@ impl<H: HashProvider + ?Sized> Index<'_, H> {
 }
 
 /// Lazy typed term scan; any storage or decoding error ends iteration.
-pub struct TermScan<'h, C: ReadCursor, H: HashProvider + ?Sized> {
+pub struct TermScan<'h, C: ReadCursor, H: HashProvider> {
     scan: Scan<C>,
     hasher: &'h H,
     done: bool,
 }
 
-impl<C: ReadCursor, H: HashProvider + ?Sized> Iterator for TermScan<'_, C, H> {
+impl<C: ReadCursor, H: HashProvider> Iterator for TermScan<'_, C, H> {
     type Item = Result<(IndexTerm, Hash)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -83,4 +87,4 @@ impl<C: ReadCursor, H: HashProvider + ?Sized> Iterator for TermScan<'_, C, H> {
     }
 }
 
-impl<C: ReadCursor, H: HashProvider + ?Sized> FusedIterator for TermScan<'_, C, H> {}
+impl<C: ReadCursor, H: HashProvider> FusedIterator for TermScan<'_, C, H> {}

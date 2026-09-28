@@ -2,11 +2,12 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use golemdb_merkle::{
-    BranchDomain, BranchNodeCompact, HashAlgorithm, HashProvider, LeafRef, RootRef, Trie,
+    Blake3Hasher, BranchDomain, BranchNodeCompact, HashProvider, Keccak256Hasher, LeafRef, RootRef,
+    Trie,
 };
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 
-const HASH: HashAlgorithm = HashAlgorithm::Keccak256;
+const HASH: Keccak256Hasher = Keccak256Hasher;
 const TABLE: Table = Table("BenchBranches");
 
 fn branches(c: &mut Criterion) {
@@ -42,15 +43,31 @@ fn branches(c: &mut Criterion) {
                 &bytes,
                 |b, bytes| b.iter(|| BranchNodeCompact::<32>::decode(black_box(bytes)).unwrap()),
             );
-            group.bench_with_input(BenchmarkId::new("hash", &parameter), &node, |b, node| {
-                b.iter(|| black_box(node).hash(BranchDomain::Index, &HASH))
-            });
+            fn hash_node<H: HashProvider>(
+                group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+                parameter: &str,
+                name: &str,
+                node: &BranchNodeCompact<32>,
+                hasher: &H,
+            ) {
+                group.bench_function(BenchmarkId::new(format!("hash/{name}"), parameter), |b| {
+                    b.iter(|| black_box(node).hash(BranchDomain::Index, hasher))
+                });
+            }
+            hash_node(
+                &mut group,
+                &parameter,
+                "keccak-256",
+                &node,
+                &Keccak256Hasher,
+            );
+            hash_node(&mut group, &parameter, "blake3", &node, &Blake3Hasher);
         }
     }
     group.finish();
 }
 
-fn leaf<const N: usize>(id: u32, clustered: bool) -> LeafRef<N> {
+fn leaf<const N: usize>(id: u32, clustered: bool, hasher: &impl HashProvider) -> LeafRef<N> {
     let digest = HASH.hash(&id.to_be_bytes());
     let mut path = [0; N];
     if !clustered {
@@ -60,25 +77,27 @@ fn leaf<const N: usize>(id: u32, clustered: bool) -> LeafRef<N> {
     path[N - 4..].copy_from_slice(&id.to_be_bytes());
     LeafRef {
         path,
-        hash: HASH.hash_parts(&[&[0x04], &path]),
+        hash: hasher.hash_parts(&[&[0x04], &path]),
     }
 }
 
-fn tries<const N: usize>(c: &mut Criterion) {
-    let mut group = c.benchmark_group(format!("merkle/trie/path_bytes={N}"));
+fn tries<const N: usize>(c: &mut Criterion, algorithm: &str, hasher: &impl HashProvider) {
+    let mut group = c.benchmark_group(format!("merkle/trie/{algorithm}/path_bytes={N}"));
     for count in [64, 1024] {
         for clustered in [false, true] {
             let db = MemoryDatabase::new();
-            let trie = Trie::<_, N>::new(TABLE, BranchDomain::Bitmap, &HASH).unwrap();
+            let trie = Trie::<_, N>::new(TABLE, BranchDomain::Bitmap, hasher);
             let mut tx = db.begin_write().unwrap();
             let mut root = RootRef::Empty;
             for i in 0..count {
-                root = trie.insert(&mut tx, root, leaf(i, clustered)).unwrap();
+                root = trie
+                    .insert(&mut tx, root, leaf(i, clustered, hasher))
+                    .unwrap();
             }
             tx.commit().unwrap();
             let read = db.begin_read().unwrap();
-            let existing = leaf(count / 2, clustered);
-            let absent = leaf(count, clustered);
+            let existing = leaf(count / 2, clustered, hasher);
+            let absent = leaf(count, clustered, hasher);
             assert_eq!(
                 trie.get(&read, root, &existing.path).unwrap(),
                 Some(existing)
@@ -102,7 +121,7 @@ fn tries<const N: usize>(c: &mut Criterion) {
             });
             for operation in ["insert", "replace", "delete"] {
                 let mut replacement = existing;
-                replacement.hash = HASH.hash(b"replacement payload");
+                replacement.hash = hasher.hash(b"replacement payload");
                 // Verify fixture semantics outside measurements.
                 let mut check = db.begin_write().unwrap();
                 let changed = match operation {
@@ -141,10 +160,27 @@ fn tries<const N: usize>(c: &mut Criterion) {
     group.finish();
 }
 
+// Input sizes cover small preimages, full branches and bitmap payloads.
+fn hash_inputs(c: &mut Criterion, algorithm: &str, hasher: &impl HashProvider) {
+    let mut group = c.benchmark_group(format!("merkle/hash/{algorithm}"));
+    for size in [32, 65, 512, 8192] {
+        let bytes = vec![0xa5; size];
+        group.throughput(criterion::Throughput::Bytes(size as u64));
+        group.bench_function(BenchmarkId::new("bytes", size), |b| {
+            b.iter(|| hasher.hash(black_box(&bytes)))
+        });
+    }
+    group.finish();
+}
+
 fn merkle(c: &mut Criterion) {
     branches(c);
-    tries::<6>(c);
-    tries::<32>(c);
+    tries::<6>(c, "keccak-256", &Keccak256Hasher);
+    tries::<32>(c, "keccak-256", &Keccak256Hasher);
+    tries::<6>(c, "blake3", &Blake3Hasher);
+    tries::<32>(c, "blake3", &Blake3Hasher);
+    hash_inputs(c, "keccak-256", &Keccak256Hasher);
+    hash_inputs(c, "blake3", &Blake3Hasher);
 }
 criterion_group!(benches, merkle);
 criterion_main!(benches);

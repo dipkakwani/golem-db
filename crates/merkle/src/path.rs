@@ -1,13 +1,3 @@
-use crate::{MerkleError, Result};
-
-pub(crate) fn check_width<const N: usize>() -> Result<()> {
-    if (1..=32).contains(&N) {
-        Ok(())
-    } else {
-        Err(MerkleError::InvalidPathWidth)
-    }
-}
-
 pub(crate) fn nibble(path: &[u8], depth: usize) -> u8 {
     (path[depth / 2] >> (4 * (1 - depth % 2))) & 15
 }

@@ -1,9 +1,12 @@
 use golemdb_cells::CellType;
-use golemdb_index::{BitmapContainer, Index, IndexTerm, PostingChange, tables};
-use golemdb_merkle::{BranchDomain, Hash, HashAlgorithm, LeafRef, RootRef, Trie};
+use golemdb_index::{
+    BITMAP_TRIE_PATH_BYTES, BitmapContainer, INDEX_TRIE_PATH_BYTES, Index, IndexTerm,
+    PostingChange, tables,
+};
+use golemdb_merkle::{BranchDomain, Hash, Keccak256Hasher, LeafRef, RootRef, Trie};
 use golemdb_storage::{Database, MdbxDatabase, ReadTransaction, Table, WriteTransaction};
 
-const HASH: HashAlgorithm = HashAlgorithm::Keccak256;
+const HASH: Keccak256Hasher = Keccak256Hasher;
 const HEAD: Table = Table("Head");
 
 fn term(value: &[u8]) -> IndexTerm {
@@ -107,7 +110,8 @@ fn persistence_worker() {
 
     // Old immutable trees remain walkable through the latest read transaction.
     // This is structural history; reopening old flat term state is engine work.
-    let bitmap_trie = Trie::<_, 6>::new(tables::BITMAP_TRIE, BranchDomain::Bitmap, &HASH).unwrap();
+    let bitmap_trie =
+        Trie::<_, BITMAP_TRIE_PATH_BYTES>::new(tables::BITMAP_TRIE, BranchDomain::Bitmap, &HASH);
     let old_bitmap = hash(&read, b"old_bitmap");
     let mut ids = Vec::new();
     for leaf in bitmap_trie.walk(&read, RootRef::Branch(old_bitmap)) {
@@ -123,7 +127,8 @@ fn persistence_worker() {
         ids.extend(container.iter());
     }
     assert_eq!(ids, vec![1, 65536]);
-    let index_trie = Trie::<_, 32>::new(tables::INDEX_TRIE, BranchDomain::Index, &HASH).unwrap();
+    let index_trie =
+        Trie::<_, INDEX_TRIE_PATH_BYTES>::new(tables::INDEX_TRIE, BranchDomain::Index, &HASH);
     let old_b = BitmapContainer::from_values(0, [2])
         .unwrap()
         .leaf_hash(&HASH)

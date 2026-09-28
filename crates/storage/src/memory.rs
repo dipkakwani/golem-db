@@ -152,8 +152,6 @@ impl WriteTransaction for MemoryWriteTransaction<'_> {
         *committed = Arc::new(self.state);
         Ok(())
     }
-
-    fn abort(self) {}
 }
 
 enum Position {

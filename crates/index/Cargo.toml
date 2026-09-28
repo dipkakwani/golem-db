@@ -14,8 +14,7 @@ thiserror.workspace = true
 # array/bitset threshold, `optimize()`'s size comparisons, the serialized header
 # layout — decide the bytes we hash into the Merkle trie, and none of them are
 # covered by its public API contract. A patch bump can therefore change every root
-# hash. Treat raising this as a coordinated migration, not a `cargo update`.
-# See internal_docs/DESIGN.md §2.6.
+# hash. 
 roaring = "=0.11.5"
 
 [dev-dependencies]
@@ -26,8 +25,6 @@ tempfile = "3"
 [features]
 default = []
 mdbx = ["golemdb-storage/mdbx"]
-# Parse custom cells, but reject their indexing until an ordered codec is defined.
-custom_types = ["golemdb-cells/custom_types"]
 
 [[bench]]
 name = "index"
