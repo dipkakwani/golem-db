@@ -3,6 +3,75 @@ use proptest::prelude::*;
 use crate::*;
 
 #[test]
+fn cell_batch_keeps_last_operation_and_reports_changes_in_key_order() {
+    use golemdb_merkle::{Keccak256Hasher, RootRef};
+    use golemdb_storage::{Database, MemoryDatabase};
+
+    let db = MemoryDatabase::new();
+    let cells = Cells::new(&Keccak256Hasher);
+    let mut tx = db.begin_write().unwrap();
+    let key = |id| CellKey::new(id, CellNameRef::raw(b"value"));
+    let value = |byte| CellValue::parse(vec![0x01, byte]).unwrap();
+    let put = |id, byte| CellChange::Put {
+        key: key(id),
+        value: value(byte),
+    };
+    let delete = |id| CellChange::Delete { key: key(id) };
+    let initial = cells
+        .apply(&mut tx, RootRef::Empty, [put(2, 0), put(3, 1)])
+        .unwrap();
+    let update = cells
+        .apply(
+            &mut tx,
+            initial.root,
+            [
+                put(3, 0),
+                put(1, 1),
+                delete(2),
+                put(4, 1),
+                delete(1),
+                put(2, 1),
+                delete(3),
+                delete(4),
+                put(1, 0),
+                put(2, 0),
+                delete(3),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        update.changed_cells,
+        vec![
+            CellValueChange {
+                key: key(1),
+                before: None,
+                after: Some(value(0))
+            },
+            CellValueChange {
+                key: key(3),
+                before: Some(value(1)),
+                after: None
+            },
+        ]
+    );
+    for (id, expected) in [
+        (1, Some(value(0))),
+        (2, Some(value(0))),
+        (3, None),
+        (4, None),
+    ] {
+        assert_eq!(cells.get(&tx, &key(id)).unwrap(), expected);
+    }
+    let fresh_db = MemoryDatabase::new();
+    let mut fresh_tx = fresh_db.begin_write().unwrap();
+    let fresh = cells
+        .apply(&mut fresh_tx, RootRef::Empty, [put(1, 0), put(2, 0)])
+        .unwrap();
+    assert_eq!(update.root, fresh.root);
+}
+
+#[test]
 fn owned_values_preserve_vectors_without_copying_storage_buffers() {
     for (name, bytes, ..) in super::vectors::VECTORS {
         let buffer = bytes.to_vec();

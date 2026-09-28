@@ -64,25 +64,65 @@
 //! assert_eq!(CellValueRef::parse(owned.encoded_bytes())?, owned.as_view());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! # Transactional storage
+//!
+//! [`Cells`] reads owned values, scans a record, and applies a net batch to both
+//! the flat `Cell` table and its branch-only `CellTrie`. The caller supplies the
+//! matching root and owns the transaction; it can write history and the head in
+//! the same transaction. Deployment admission and index updates are engine work.
+//! Enable `mdbx` for persistent storage through the same interface.
+//!
+//! ```
+//! use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells};
+//! use golemdb_merkle::{Keccak256Hasher, RootRef};
+//! use golemdb_storage::{Database, MemoryDatabase, WriteTransaction};
+//!
+//! let db = MemoryDatabase::new();
+//! let hasher = Keccak256Hasher;
+//! let cells = Cells::new(&hasher);
+//! let key = CellKey::new(42, CellNameRef::parse_user(b"status", 64)?);
+//! let mut tx = db.begin_write()?;
+//! let update = cells.apply(&mut tx, RootRef::Empty, [CellChange::Put {
+//!     key: key.clone(), value: CellValue::parse(b"\x02ready".to_vec())?,
+//! }])?;
+//! tx.commit()?;
+//! let read = db.begin_read()?;
+//! assert_eq!(cells.get(&read, &key)?.unwrap().as_str(), Some("ready"));
+//! assert_eq!(cells.reopen(&read, update.root.hash(&hasher))?, update.root);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
+/// Domain byte for cell leaf hashes.
+pub const CELL_LEAF_DOMAIN: u8 = 0x00;
+/// Domain byte for CellTrie branch hashes.
+pub const CELL_BRANCH_DOMAIN: u8 = 0x01;
+
+mod cell_trie;
+mod cells;
 mod config;
 mod error;
 mod key;
 mod name;
 mod order;
+pub mod tables;
 mod types;
 mod value;
 
 #[cfg(test)]
 mod tests;
 
+pub use cells::{CellChange, CellScan, CellValueChange, Cells, CellsUpdate};
 pub use config::{CellLimitError, CellLimits};
-pub use error::CellParseError;
+pub use error::{CellError, CellParseError, Result};
 pub use key::{CellKey, CellKeyError};
 pub use name::{CellName, CellNameError, CellNameRef, reserved};
 pub use order::{decode_float, encode_float, flip_sign};
 pub use types::{CellType, FloatWidth, Width};
 pub use value::{CellValue, CellValueRef};
+
+/// Cell trie paths are full hash digests of the encoded cell key.
+pub const CELL_TRIE_PATH_BYTES: usize = size_of::<golemdb_merkle::Hash>();
 
 /// The metadata byte's high bit: whether the cell is indexable. The low 7
 /// bits are the type id.

@@ -53,3 +53,21 @@ impl fmt::Display for CellParseError {
 }
 
 impl core::error::Error for CellParseError {}
+
+/// Failures reading or updating cell state. Mutation errors require aborting
+/// the caller's write transaction; previously applied changes are not undone.
+#[derive(Debug, thiserror::Error)]
+pub enum CellError {
+    #[error(transparent)]
+    Storage(#[from] golemdb_storage::StorageError),
+    #[error(transparent)]
+    Merkle(#[from] golemdb_merkle::MerkleError),
+    #[error("invalid stored cell key: {0}")]
+    Key(#[from] crate::CellKeyError),
+    #[error("invalid stored cell value: {0}")]
+    Value(#[from] CellParseError),
+    #[error("cell state does not match the supplied root")]
+    RootMismatch,
+}
+
+pub type Result<T> = std::result::Result<T, CellError>;
