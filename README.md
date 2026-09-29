@@ -16,6 +16,9 @@ entry in the root [Cargo.toml](Cargo.toml), so crates depend on each other via
   bitmap/index tries, ordered terms and scans, canonical chunks, and query bitmaps
 - `crates/merkle` (package `golemdb-merkle`) — branch-only persistent Merkle trie,
   canonical compact branches, shared hashing and YAML hash configuration
+- `crates/branch` (package `golemdb-branch`) — head-validated branch IDs and guarded cell
+  read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
+  seal and persistence follow
 
 ## Documentation
 
@@ -66,8 +69,8 @@ native setups are unaffected.
 Build output and the cargo caches live on named Docker volumes,
 so rebuilding the container keeps them.
 
-~~~sh
+```sh
 # Basic build and test steps inside the container
 cargo build --workspace
 cargo nextest run --workspace
-~~~
+```
