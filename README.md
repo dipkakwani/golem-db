@@ -38,3 +38,18 @@ cargo bench --workspace --no-run  # compile benches without running them
 
 `.github/workflows/ci.yml` builds the workspace, runs the test suite with
 [cargo-nextest](https://nexte.st/), and checks that benchmarks compile.
+
+## Dev container (optional)
+
+`.devcontainer/` holds a light container with the pinned Rust toolchain
+and cargo-nextest.
+Open the repo in VS Code and choose **Reopen in Container**;
+native setups are unaffected.
+Build output and the cargo caches live on named Docker volumes,
+so rebuilding the container keeps them.
+
+```sh
+# Inside the container, the same steps CI runs
+cargo build --workspace
+cargo nextest run --workspace
+```
