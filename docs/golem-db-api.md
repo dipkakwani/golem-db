@@ -156,8 +156,9 @@ limiting. → _design [§4](golem-db-design.md#what-the-engine-enforces)_
 ### Commits
 
 - `CommitId: u64` — 0 = genesis, +1 per commit, gapless, immutable, durable.
-- The lineage never forks; competing candidates are branches until one commits. Reorgs use `rewind`;
-  fork _choice_ is the host's job.
+- The lineage never forks; competing candidates are branches until one commits. There is no `rewind`
+  in v1, so a commit cannot be undone: a host commits only blocks it will not reorg. Fork _choice_ is
+  the host's job.
 - Every commit's roots stay readable from `#roots`, which is what makes proofs against past commits
   possible ([Proofs](#proofs)).
 
@@ -204,7 +205,7 @@ cannot see. Rollback cost is proportional to the operations undone, never to the
 | `seal`        | `(b) → SealedCommit`             | freezes the overlay and computes the roots, persisting nothing; optional — see below                                                      |
 | `commit`      | `(b) → CommitId`                 | implies a final checkpoint, and a `seal` if none was taken; origin must be the head, else `Conflict`; assigns head+1 atomically; consumed |
 | `discard`     | `(b)`                            | drops the branch wholesale; receipts already returned stay valid                                                                          |
-| `rewind`      | `(to: CommitId)`                 | host-restricted reorg mechanism, within the retention window                                                                              |
+| `rewind`      | `(to: CommitId)`                 | **not in v1.** Reserved for a host-restricted reorg mechanism within the retention window (design D02)                                   |
 | `branch_hash` | `(b) → B256`                     | digest of the branch's current state, computed on demand from the overlay                                                                 |
 | `branch_info` | `(b) → {origin, frame_depth}`    | introspection                                                                                                                             |
 

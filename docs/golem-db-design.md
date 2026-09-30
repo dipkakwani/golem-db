@@ -47,19 +47,20 @@ vectors, and a clean reader pass (`CHANGES.md`, Phase 5).
 
 | Chapter | Status | Open items (`CHANGES.md`) |
 | --- | --- | --- |
-| [1. Fundamentals](#1-fundamentals) | recorded, open | P06 ("full history" vs. retention: decided, text not yet applied); D13 (environment assumptions) |
+| [1. Fundamentals](#1-fundamentals) | recorded, open | D05 (retention mechanism behind property 5); D13 (environment assumptions) |
 | [2. System Schema](#2-system-schema) | recorded, open | D09 (Roaring profile, encoding canon); D13 (MDBX durability model) |
 | [3. Records and Cells](#3-records-and-cells) | recorded, open | D09 (`bool` byte forms, shipped type-id map) |
-| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D08 (`#recordKeys` on delete); D10 (model activation semantics); D18 (reserved layout: contract or choice) |
+| [4. System, Admin and User Records](#4-system-admin-and-user-records) | recorded, open, depends-on-metering | D08 (`#recordKeys` on delete); D10 (model activation semantics); D09 (`#immutableDataSegments` layout); D19 (record 5, `#logDigests`); D05 (retention mechanism behind `#minRetention`) |
 | [5. Indexing Cells for Filtering](#5-indexing-cells-for-filtering) | recorded, open | D01 (filter evaluation: predicate combination, bounds, cost shape); D14 |
 | [6. Merkleizing the Posting List](#6-merkleizing-the-posting-list-bitmaptrie) | recorded, open | D09 (odd-nibble padding, `EMPTY_ROOT`) |
-| [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D05 (retention, historical discovery, `Pruned`); D12; P06 (decided, text not yet applied) |
-| [8. State Commitment and Global Root](#8-state-commitment-and-global-root) | recorded, open | D06 (proof scope, non-inclusion witness); D09 (reserved-layout tags, absent pre-image); D18 |
+| [7. Point-in-Time History](#7-point-in-time-history) | recorded, open | D05 (retention, historical discovery, `Pruned`); D12 |
+| [8. State Commitment and Global Root](#8-state-commitment-and-global-root) | recorded, open | D06 (proof scope, non-inclusion witness); D09 (reserved-layout tags, absent pre-image) |
 | [9. Trie Representation](#9-trie-representation-canonical-vs-physical) | recorded | — |
-| [10. Write Branches and Checkpoint Frames](#10-write-branches-and-checkpoint-frames) | recorded, open | D02 (`rewind`); D03 (crash recovery); D04 (concurrency contract); D07 (branch transitions); D08; D15; D16 |
-| [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D05 (shard-mark survival); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
+| [10. Write Branches and Checkpoint Frames](#10-write-branches-and-checkpoint-frames) | recorded, open | D02 (`rewind`: not in v1; semantics still to specify); D03 (crash recovery); D04 (concurrency contract); D07 (branch transitions); D08; D15; D16 |
+| [11. Commit Immutable-Data Segments](#11-commit-immutable-data-segments) | recorded, open | D17 (typed columns); D19 (per-commit log digest, required by SE-1); D05 (shard-mark survival); D02 (`rewind`: not in v1); T01, T02 (reth claims). Adopted per requirement SE-1 (P05) |
 | [12. Sorting](#12-sorting) | recorded, open | D14 (cost qualifications) |
 | [13. Paging](#13-paging) | recorded, open, depends-on-metering | D11 (cursor contract, fingerprint scope); D12 (live-paging guarantee) |
+| [Appendix A. Normative Surface](#appendix-a--normative-surface) | open | S05 (being assembled; the full list waits on D09) |
 
 The metering layer itself (property 7 in §1) is out of scope here: D10 records the shape this
 document assumes of it.
@@ -136,6 +137,7 @@ document assumes of it.
   - [The Cursor and the Warm Node](#the-cursor-and-the-warm-node)
   - [Open Question on Paging](#open-question-on-paging)
 - **[Open Questions](#open-questions)**
+- **[Appendix A — Normative Surface](#appendix-a--normative-surface)**
 
 ---
 
@@ -209,7 +211,7 @@ is built to deliver.
 | 2   | **Filtering and querying**       | Records are queryable by cell value, with equality, **range** and **prefix** predicates, plus sorting and paging — served by a reverse index over index terms rather than by scanning ([§5](#5-indexing-cells-for-filtering)).           |
 | 3   | **State commitment with proofs** | Every state has a single 32-byte root, and any cell or index term in it can be proved against that root to a party holding nothing but the root ([§8](#8-state-commitment-and-global-root)).                                             |
 | 4   | **Determinism**                  | The same content written in the same order yields byte-identical state and therefore an identical commitment, on every implementation and every machine — which is what makes the root agreeable between mutually distrusting parties.   |
-| 5   | **Full history**                 | Every past state is retained and directly addressable: point-in-time reads and queries at any commit, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-point-in-time-history)). |
+| 5   | **History within a retention window** | Every state within the retention window is retained and directly addressable: point-in-time reads and queries at any commit in the window, and proofs against the root as of that commit, without replaying intermediate states ([§7](#7-point-in-time-history)). The minimum window is the instance parameter `#minRetention`, in commits ([§4](#params-recordid-0)); beyond it the consensus-path API refuses a historical read identically on every node, whatever a node retains. Longer history is served by a separate archival surface, not yet designed. Mechanism: `CHANGES.md` D05. |
 | 6   | **Branches**                     | Several write transactions run concurrently over the head state, each seeing its own work in progress, with reversible checkpoints inside them and exactly one winner at commit.                                                         |
 | 7   | **Budget-bounded execution**     | Every data-plane operation is priced in cost units against a versioned schedule and capped by a caller-supplied budget: exceeding it aborts with the cost spent and **no partial results**, so no call can consume unbounded work.       |
 
@@ -958,6 +960,7 @@ anything, roots before it can prove anything, and mappings last.
 | `#maxStrLen`      | `u32` (BE) | cap on `str` values (attribute values land in index keys) |
 | `#maxBytesLen`    | `u32` (BE) | cap on `bytes` values (field-only, never in an index key) |
 | `#maxCellNameLen` | `u32` (BE) | cap on user cell names                                    |
+| `#minRetention`   | `u64` (BE) | minimum retention window, in commits: the consensus-path API refuses reads at commits before `head − #minRetention`, identically on every node ([§1](#1-fundamentals) property 5; mechanism D05) |
 | `#shardSpan`      | `u64` (BE) | commits per segment shard file ([§11](#genesis-declaration)) |
 | `#immutableDataSegments` | layout open (D09) | segment declarations `(name, columns, compression)` ([§11](#genesis-declaration)) |
 
@@ -1528,8 +1531,9 @@ lies — no intermediate commits are replayed.
 > unreachable from the current root ([§9](#the-canonical-trie-and-the-physical-trie)) — and once
 > garbage collection reclaims them the read is not lost but becomes _expensive_: a proof must rebuild
 > the trie at `T`, and a filtered query must recover the term's membership at `T`, both by resolving
-> every cell from history — O(state) instead of O(depth). Which structures a deployment retains, for
-> how long, and what a read past the window returns is open (`CHANGES.md` D05).
+> every cell from history — O(state) instead of O(depth). The minimum window is `#minRetention`
+> ([§4](#params-recordid-0)); which structures a deployment retains beyond it, and exactly what a read
+> past the window returns, is open (`CHANGES.md` D05).
 
 ```mermaid
 flowchart TB
@@ -1933,6 +1937,10 @@ hold state the root commits to, grey tables are derived or historical structures
 | `CellHistory`, `CellChangeSet`, `IndexHistory`, `IndexChangeSet` | They record **past** states, and the `GlobalRoot` commits the present one. Each historical state was committed by its own root when it was current.                                                                                                            |
 | `Superblock`                                                     | Format identifiers must be readable before decoding, and the head cannot commit to itself ([§4](#the-superblock)).                                                                                                                                             |
 
+The reserved records of [§4](#4-system-admin-and-user-records) live in `Cell`, so the commitment binds the
+engine's own bookkeeping as well as the user's data; a conformant engine must reproduce it byte for
+byte ([Appendix A](#appendix-a--normative-surface)).
+
 Three observations are easy to lose here.
 
 First, **"out of commitment" is not one property but two.** `CellTrie` and `IndexTrie` are outside it
@@ -2334,7 +2342,8 @@ host puts a second checkpoint inside the transaction, after its pre-execution pa
 `rollback()` after `OutOfBudget` undoes only the user operations. The engine reports the cost in
 `OutOfBudget{spent}`; it never charges anyone itself, so the settlement is an ordinary host write.
 A second `rollback()` would reach past `checkpoint 2` and undo the fee as well (see
-"`rollback()` is not idempotent" above)._
+"`rollback()` is not idempotent" above). If D16 is decided as recommended, a rollback on the
+now-empty frame is instead an error and pops nothing._
 
 > **Checkpoints rather than `fork` / `merge`.** A checkpoint frame _is_ a forked child branch, minus
 > the handle and minus the second overlay, and the nesting any real caller needs is strictly
@@ -2786,7 +2795,7 @@ recovery, given MDBX head N  →  truncate the system segment to N+1 rows
                              →  read row N
                              →  truncate each segment to mark(N)[seg] rows
 
-rewind(to)                   →  the same, against `to`
+rewind(to)                   →  the same, against `to`       (not in v1: D02)
 ```
 
 Truncating "to `mark(N)[seg]` rows" is exact precisely because the mark is a count: keep ordinals `0 … mark−1`, discard the rest.
@@ -2806,7 +2815,7 @@ That is deliberate. A `one-per-commit` declaration would be marginally faster �
 
 **`truncate` and `prune` are not in the API.** Truncation is internal to crash recovery and `rewind`; pruning is the engine's existing retention mechanism, extended to drop whole shards whose commit span has fallen entirely outside the window. A host never asks for either.
 
-`rewind(to)` uses the **mirror of commit's ordering — MDBX first, then truncate segments** — for the same reason commit orders them the other way: in the window between the two, segments ahead of MDBX is recoverable and MDBX ahead of segments is not. A property falls out of this that is worth naming: cells and segments unwind _together_, cells by change-set replay and segments by truncation, so a host's own mapping cells revert alongside the commits they describe with no separate fix-up.
+`rewind(to)` is not in v1 (`CHANGES.md` D02); what follows is the mechanism it will use. It uses the **mirror of commit's ordering — MDBX first, then truncate segments** — for the same reason commit orders them the other way: in the window between the two, segments ahead of MDBX is recoverable and MDBX ahead of segments is not. A property falls out of this that is worth naming: cells and segments unwind _together_, cells by change-set replay and segments by truncation, so a host's own mapping cells revert alongside the commits they describe with no separate fix-up.
 
 Two additions to the shared surfaces:
 
@@ -3303,11 +3312,11 @@ onto chapters.
 
 | ID | Question | Where it bites |
 | --- | --- | --- |
-| D01 | How predicates combine (conjunction only, ordered DNF, negation, match-all); bounds on groups, predicates, nesting; cost shape | §5 |
-| D02 | Does `rewind(to)` exist; what it undoes (cells, index, tries, history, `#roots`, segments); ordering across MDBX and segments; what happens to handles, cursors and caches; commit identity after rewind | §10, §11 |
+| D01 | How predicates combine (conjunction only, ordered DNF, negation, match-all); bounds on groups, predicates, nesting; cost shape; whether a negated literal matches records where the cell is absent or of another type (MongoDB-style, recommended) or only records that have it (SQL-style) | §5 |
+| D02 | `rewind(to)` is **not in v1** (decided 2026-09-30), but its semantics are to be specified now, so the feature can be enabled later without a contract change. Open: what it undoes (cells, index, tries, history, `#roots`, segments); ordering across MDBX and segments; what happens to handles, cursors and caches; commit identity after rewind | §10, §11 |
 | D03 | Crash recovery: restart from the `Superblock` head; segment truncation; behaviour on segment-fsync or MDBX-write failure; retry idempotence; already-issued receipts | §10, §11 |
 | D04 | Concurrency contract: one MDBX read snapshot per branch and per query; where the commit guard's critical section starts relative to segment appends; arbitration of two sealed candidates | §10 |
-| D05 | Retention: which structures survive per read class (point, filtered, proof, segments); earliest supported commit; reader and cursor protection from GC; `Pruned` vs `NotFound`; discovering terms and cell names deleted since T; where a shard's starting mark survives once the previous system-segment shard is pruned | §7, §11, §13 |
+| D05 | Retention. **Decided (P06):** the minimum window is `#minRetention`, in commits, in `#params`, and the consensus path refuses beyond it on every node. Open: which structures survive per read class (point, filtered, proof, segments); earliest supported commit; reader and cursor protection from GC; `Pruned` vs `NotFound`; discovering terms and cell names deleted since T; where a shard's starting mark survives once the previous system-segment shard is pruned | §7, §11, §13 |
 | D06 | Proof scope: which classes are proven (membership, non-inclusion; not range completeness); how the server obtains a mismatching virtual leaf's tagged value at head and historically; cost | §8 |
 | D07 | Branch transitions: delete visibility over real overlay values; the net diff with restored or no-op entries after rollback; history of cancelled changes; create-then-delete in one commit | §10 |
 | D08 | `#recordKeys` on delete: does the binding survive (§4: re-creation `patch`es it) or is it removed (§10: the inverse of delete restores it)? | §4, §10 |
@@ -3320,17 +3329,33 @@ onto chapters.
 | D15 | Stale handle: `Conflict` on commit vs `HandleInvalid` elsewhere — intentional? | §10 |
 | D16 | Should the engine refuse a second consecutive `rollback()`? | §10 |
 | D17 | Are segment columns typed? As written, no: a column is raw bytes and the application owns the format, which keeps the engine ignorant of what a receipt is. The alternative declares a §3 type per column, so a column carries a `typeTag` as a cell does — self-describing segments, tooling without application code, a complete record/cell parallel — at the cost of dragging the type system into a structure built for opaque payloads and pinning at genesis an encoding the application may want to version independently | §11 |
-| D18 | Is the §4 reserved-record layout part of the commitment contract a second engine must reproduce, or a Golem DB choice? | §4, §8 |
 | D19 | Per-commit log digest (requirement SE-1): how a digest of each segment's appended rows is defined, and whether the engine commits it (lag-one, in `#logDigests`, record 5) or the host does | §4, §11 |
-| P08 | **Standalone negation.** Arkiv's live DSL accepts `status != "open"` and `!` on its own; the API admits negated literals; nothing here says what a negation-only query is a complement *of*. Beside a positive predicate, negation is set difference from the running intermediate and needs nothing new. Standalone negation, `EXISTS` and match-all all need a posting list of every live record — an engine-maintained `#live` index term, one container write per create and per delete. Adopt it, or drop standalone `!=` from the product | §5, §6, §12 |
+| P08 | **Standalone negation.** Arkiv's live DSL accepts `status != "open"` and `!` on its own; the API admits negated literals; nothing here says what a negation-only query is a complement *of*. Beside a positive predicate, negation is set difference from the running intermediate and needs nothing new. Standalone negation, `EXISTS` and match-all all need a posting list of every live record — an engine-maintained `#live` index term, one container write per create and per delete. Adopt it, or drop standalone `!=` from the product. Either way, record whether the live DSL's `!=` includes records without the attribute (D01) | §5, §6, §12 |
 | P09 | **Glob `~`.** The live DSL has it; a general glob has no bounded, deterministic cost shape. Proposed: a literal with one trailing wildcard compiles to the §5 prefix scan; anything else is `InvalidQuery` | §5 |
 | T01, T02 | reth claims to verify against source: NippyJar's format properties; static-file write ordering | §11 |
 
-Product decisions P01–P07 are closed (`CHANGES.md` K4). Two of them are decided but not yet reflected
-in the text: **P06** qualifies the "full history" promise of property 5 ([§1](#1-fundamentals)) with a
-retention window, and **P07** makes a second conformant engine a goal, which answers D18: the §4
-reserved-record layout is normative. D18 stays listed until that text lands.
+Product decisions P01–P07 are decided and their text has landed (`CHANGES.md`, Closed).
 
 Two things are **not** open, though they read as parameters: the hash function
 ([§2](#note-on-hashing)) and the concrete type-id assignment ([§3](#the-type-grid)) are deployment
 choices by design, recorded in the `Superblock` and the shipped map respectively.
+
+---
+
+## Appendix A — Normative Surface
+
+_Being assembled (`CHANGES.md` S05). This appendix will list everything that changes the
+`GlobalRoot` if it changes, and, explicitly, what an implementation is free to choose. The full list
+follows the encoding profile (D09); until then it holds the one statement already decided._
+
+**The commitment binds the engine's bookkeeping.** The reserved records of
+[§4](#4-system-admin-and-user-records) (`#params`, `#alloc`, `#roots`, `#recordKeys` and the rest of
+the catalogue) are committed cells like any user cell, so the `GlobalRoot` depends on their exact
+layout, not only on the user's data. An engine is conformant if and only if it computes the same
+`GlobalRoot` as this design for the same sequence of operations. Such an engine re-implements
+[§2](#2-system-schema)–[§4](#4-system-admin-and-user-records) and
+[§8](#8-state-commitment-and-global-root) byte for byte, and that is the conformance target. This
+follows from the requirements, not from preference: DI-2 puts every piece of engine state that
+affects results under the commitment, and NF-8 makes commitment vectors part of what a second engine
+must pass (`CHANGES.md` D18, P07).
+
