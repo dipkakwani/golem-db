@@ -54,7 +54,8 @@ See [performance benchmarks](internal_docs/benchmarks.md) for the cells, Merkle 
 Criterion suites, workload filters, timing boundaries and baseline comparisons.
 
 `.github/workflows/ci.yml` builds the workspace, runs the test suite with
-[cargo-nextest](https://nexte.st/), and checks that benchmarks compile.
+[cargo-nextest](https://nexte.st/) across the full feature powerset via
+cargo-hack, and checks that benchmarks compile.
 
 ## Dev container (optional)
 
@@ -65,10 +66,8 @@ native setups are unaffected.
 Build output and the cargo caches live on named Docker volumes,
 so rebuilding the container keeps them.
 
-```sh
-# Inside the container, the same steps CI runs
+~~~sh
+# Basic build and test steps inside the container
 cargo build --workspace
 cargo nextest run --workspace
-```
-[cargo-nextest](https://nexte.st/) across the full feature powerset via
-cargo-hack, and checks that benchmarks compile.
+~~~
