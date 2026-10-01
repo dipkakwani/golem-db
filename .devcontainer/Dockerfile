@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
 
 # lld is the linker on aarch64; devcontainer.json explains why.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends lld \
+    && apt-get install -y --no-install-recommends clang libclang-dev lld \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the toolchain rust-toolchain.toml pins (channel and components) into
