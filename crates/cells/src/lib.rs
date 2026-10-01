@@ -104,6 +104,7 @@ mod error;
 mod key;
 mod name;
 mod order;
+pub mod system;
 pub mod tables;
 mod types;
 mod value;
@@ -111,7 +112,7 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub use cells::{CellChange, CellScan, CellValueChange, Cells, CellsUpdate};
+pub use cells::{CellChange, CellReader, CellScan, CellValueChange, Cells, CellsUpdate};
 pub use config::{CellLimitError, CellLimits};
 pub use error::{CellError, CellValueParseError, Result};
 pub use key::{CellKey, CellKeyError};

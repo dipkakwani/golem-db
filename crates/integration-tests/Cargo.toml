@@ -11,6 +11,7 @@ golemdb-branch.workspace = true
 golemdb-cells.workspace = true
 golemdb-index.workspace = true
 golemdb-merkle.workspace = true
+golemdb-record.workspace = true
 golemdb-storage.workspace = true
 golemdb-storage-mdbx.workspace = true
 proptest.workspace = true

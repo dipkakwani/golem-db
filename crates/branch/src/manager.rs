@@ -50,9 +50,9 @@ impl BranchState {
 
 type Entry = Arc<Mutex<Option<BranchState>>>;
 
-struct Inner<D, H> {
+struct Inner<DB, H> {
     hasher: H,
-    database: D,
+    database: DB,
     branches: Mutex<BTreeMap<BranchId, Entry>>,
 }
 
@@ -93,11 +93,11 @@ struct Inner<D, H> {
 /// This is not a general guarantee for backend panics: storage snapshot creation
 /// and head validation happen before the callback's panic guard, so a panic there
 /// can poison the branch lock. See [`commit`](Self::commit) for publication limits.
-pub struct Branches<D, H> {
-    inner: Arc<Inner<D, H>>,
+pub struct Branches<DB, H> {
+    inner: Arc<Inner<DB, H>>,
 }
 
-impl<D, H> Clone for Branches<D, H> {
+impl<DB, H> Clone for Branches<DB, H> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -105,10 +105,10 @@ impl<D, H> Clone for Branches<D, H> {
     }
 }
 
-impl<D: Database, H: HashProvider> Branches<D, H> {
+impl<DB: Database, H: HashProvider> Branches<DB, H> {
     /// Open a manager over an initialized head. Performs no writes and fails
     /// if the head is missing, malformed, or unreadable.
-    pub fn new(database: D, hasher: H) -> Result<Self> {
+    pub fn new(database: DB, hasher: H) -> Result<Self> {
         {
             let tx = database.begin_read()?;
             read_head(&tx)?;
@@ -124,6 +124,13 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
 
     pub fn head(&self) -> Result<CommitId> {
         read_head(&self.inner.database.begin_read()?)
+    }
+
+    /// The database shared by this manager. Committed readers can open a
+    /// snapshot directly; no branch registration or overlay is needed.
+    /// Direct writers must obey the publication contract documented on Branches.
+    pub fn database(&self) -> &DB {
+        &self.inner.database
     }
 
     /// Open a new independent overlay and its first frame over the current head.
@@ -164,7 +171,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     pub fn read<T, E>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&CellRead<'_, D::Read<'_>>) -> std::result::Result<T, E>,
+        operation: impl FnOnce(&CellRead<'_, DB::Read<'_>>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, OperationError<E>> {
         self.with_branch(branch_id, |state, origin| {
             state.require_open().map_err(OperationError::Branch)?;
@@ -188,7 +195,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     pub fn write<T, E>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&mut CellWrite<'_, D::Read<'_>>) -> std::result::Result<T, E>,
+        operation: impl FnOnce(&mut CellWrite<'_, DB::Read<'_>>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, OperationError<E>> {
         self.with_branch(branch_id, |state, origin| {
             state.require_open().map_err(OperationError::Branch)?;
@@ -294,7 +301,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     fn with_branch<T>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&mut BranchState, &D::Read<'_>) -> T,
+        operation: impl FnOnce(&mut BranchState, &DB::Read<'_>) -> T,
     ) -> Result<T> {
         self.with_slot(branch_id, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
@@ -308,7 +315,7 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     fn with_slot<T>(
         &self,
         branch_id: BranchId,
-        operation: impl FnOnce(&mut Option<BranchState>, &D::Read<'_>) -> T,
+        operation: impl FnOnce(&mut Option<BranchState>, &DB::Read<'_>) -> T,
     ) -> Result<T> {
         let entry = self
             .inner

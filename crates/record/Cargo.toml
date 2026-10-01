@@ -1,0 +1,13 @@
+[package]
+name = "golemdb-record"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+golemdb-cells.workspace = true
+golemdb-branch.workspace = true
+golemdb-storage.workspace = true
+golemdb-merkle.workspace = true
+thiserror.workspace = true
