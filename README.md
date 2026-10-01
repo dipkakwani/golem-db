@@ -56,3 +56,18 @@ Criterion suites, workload filters, timing boundaries and baseline comparisons.
 `.github/workflows/ci.yml` builds the workspace, runs the test suite with
 [cargo-nextest](https://nexte.st/) across the full feature powerset via
 cargo-hack, and checks that benchmarks compile.
+
+## Dev container (optional)
+
+`.devcontainer/` holds a light container with the pinned Rust toolchain
+and cargo-nextest.
+Open the repo in VS Code and choose **Reopen in Container**;
+native setups are unaffected.
+Build output and the cargo caches live on named Docker volumes,
+so rebuilding the container keeps them.
+
+~~~sh
+# Basic build and test steps inside the container
+cargo build --workspace
+cargo nextest run --workspace
+~~~
