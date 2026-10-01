@@ -520,6 +520,13 @@ Three things follow from identity being an ordinary cell rather than a side tabl
   no new table — so a proof that `recordID 42` holds `Price = 100` can be paired with a proof of the
   key that `recordID` stood for at that commit.
 
+**Empty user records are legal.** Record existence is independent of user-defined
+content: `create` may supply zero user cells, and removing the last user cell through
+`patch` does not delete the record. Its `#key`, `#recordKeys` binding and engine-maintained
+metadata remain; `get` succeeds for the existing record. Only `delete` removes its
+identity and binding from live state. The per-record `#meta` counts and charges for
+empty records are specified in the [metering record model](golem-db-metering.md#record-model).
+
 ### Cell Names
 
 User-supplied cell names follow an ASCII identifier grammar. The length cap is `#maxCellNameLen`, a
