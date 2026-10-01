@@ -29,3 +29,5 @@ RUN case "$(dpkg --print-architecture)" in \
         *) echo "unsupported architecture" >&2; exit 1 ;; \
     esac \
     && curl -LsSf "https://get.nexte.st/latest/$platform" | tar zxf - -C /usr/local/bin
+
+RUN cargo install cargo-hack --locked
