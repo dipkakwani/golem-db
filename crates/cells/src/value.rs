@@ -1,10 +1,10 @@
 //! [`CellValue`] owns encoded bytes; [`CellValueRef`] borrows their payload.
 //! Both expose the same metadata and typed accessors.
 
-use crate::INDEXABLE_BIT;
-use crate::error::CellParseError;
+use crate::error::CellValueParseError;
 use crate::order::{decode_float, flip_sign};
 use crate::types::{CellType, FloatWidth, Width};
+use crate::{INDEXABLE_BIT, TYPE_MASK};
 
 /// A cell: a type, its stored value bytes, and whether it is indexable.
 /// Borrows the value straight out of the storage buffer.
@@ -26,7 +26,7 @@ pub struct CellValue {
 impl CellValue {
     /// Validate once and take ownership of a complete encoded cell without
     /// copying its buffer. Deployment limits are checked separately at admission.
-    pub fn parse(bytes: Vec<u8>) -> Result<Self, CellParseError> {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, CellValueParseError> {
         let ty = CellValueRef::parse(&bytes)?.cell_type();
         Ok(Self { bytes, ty })
     }
@@ -202,9 +202,13 @@ impl From<CellValueRef<'_>> for CellValue {
 
 impl<'a> CellValueRef<'a> {
     /// Build a cell from a stored value, validating it.
-    pub fn new(ty: CellType, value: &'a [u8], indexable: bool) -> Result<Self, CellParseError> {
+    pub fn new(
+        ty: CellType,
+        value: &'a [u8],
+        indexable: bool,
+    ) -> Result<Self, CellValueParseError> {
         if indexable && ty == CellType::Bytes {
-            return Err(CellParseError::NotIndexable);
+            return Err(CellValueParseError::NotIndexable);
         }
         ty.validate(value)?;
         Ok(Self {
@@ -217,9 +221,9 @@ impl<'a> CellValueRef<'a> {
     /// Decode one complete cell buffer. Strings and bytes consume the entire
     /// remainder; fixed-width types require exactly their declared width.
     /// The surrounding storage row or slice supplies the cell boundary.
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, CellParseError> {
-        let (&metadata, value) = bytes.split_first().ok_or(CellParseError::Empty)?;
-        let ty = CellType::from_id(metadata & !INDEXABLE_BIT)?;
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, CellValueParseError> {
+        let (&metadata, value) = bytes.split_first().ok_or(CellValueParseError::Empty)?;
+        let ty = CellType::from_id(metadata & TYPE_MASK)?;
         Self::new(ty, value, metadata & INDEXABLE_BIT != 0)
     }
 
@@ -229,8 +233,14 @@ impl<'a> CellValueRef<'a> {
         out.extend_from_slice(self.value);
     }
 
+    /// Encode the metadata byte followed by the stored payload.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + self.value.len());
+        let capacity = self
+            .value
+            .len()
+            .checked_add(1)
+            .expect("encoded cell length exceeds usize::MAX");
+        let mut out = Vec::with_capacity(capacity);
         self.encode_into(&mut out);
         out
     }

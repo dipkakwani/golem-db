@@ -1,5 +1,5 @@
 use crate::INDEX_LEAF_DOMAIN;
-use golemdb_cells::{CellParseError, CellType, CellValueRef, FloatWidth};
+use golemdb_cells::{CellType, CellValueParseError, CellValueRef, FloatWidth};
 use golemdb_merkle::{Hash, HashProvider};
 use std::{error::Error, fmt};
 
@@ -23,7 +23,7 @@ impl IndexTerm {
         if let Some(expected) = ty.width()
             && value.len() != expected
         {
-            return Err(TermError::Value(CellParseError::LengthMismatch {
+            return Err(TermError::Value(CellValueParseError::LengthMismatch {
                 ty,
                 expected,
                 actual: value.len(),
@@ -182,7 +182,7 @@ fn validate_float(bytes: &mut [u8], width: FloatWidth) -> Result<(), TermError> 
 pub enum TermError {
     InvalidName,
     UnsupportedType(CellType),
-    Value(CellParseError),
+    Value(CellValueParseError),
     NaN,
     InvalidEncoding,
 }

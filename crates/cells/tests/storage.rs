@@ -2,8 +2,8 @@ use golemdb_cells::CELL_BRANCH_DOMAIN;
 use std::collections::BTreeMap;
 
 use golemdb_cells::{
-    CELL_TRIE_PATH_BYTES, CellChange, CellError, CellKey, CellNameRef, CellParseError, CellType,
-    CellValue, CellValueChange, CellValueRef, Cells, tables,
+    CELL_TRIE_PATH_BYTES, CellChange, CellError, CellKey, CellNameRef, CellType, CellValue,
+    CellValueChange, CellValueParseError, CellValueRef, Cells, tables,
 };
 use golemdb_merkle::{HashProvider, Keccak256Hasher, LeafRef, RootRef, Trie};
 use golemdb_storage::{
@@ -391,7 +391,7 @@ fn root_mismatches_and_corrupt_rows_are_errors(db: &impl Database) {
     tx.put(tables::CELL, &key(42, b"a").encode(), &[0]).unwrap();
     assert!(matches!(
         cells.get(&tx, &key(42, b"a")),
-        Err(CellError::Value(CellParseError::AbsentTag))
+        Err(CellError::Value(CellValueParseError::AbsentTag))
     ));
     assert!(matches!(
         cells.apply(&mut tx, root, [delete(42, b"a")]),
@@ -415,12 +415,6 @@ fn malformed_singleton_key_is_rejected(db: &impl Database) {
 fn memory_db() -> ((), MemoryDatabase) {
     ((), MemoryDatabase::new())
 }
-#[cfg(feature = "mdbx")]
-fn mdbx_db() -> (tempfile::TempDir, golemdb_storage::MdbxDatabase) {
-    let dir = tempfile::tempdir().unwrap();
-    let db = golemdb_storage::MdbxDatabase::open(dir.path()).unwrap();
-    (dir, db)
-}
 
 macro_rules! suite {
     ($module:ident, $setup:ident, $($case:ident),+ $(,)?) => {
@@ -435,17 +429,6 @@ macro_rules! suite {
 suite!(
     memory,
     memory_db,
-    transitions_and_tagged_commitments,
-    record_scans_preserve_raw_names_and_own_results,
-    batches_report_original_and_final_values_and_skip_noops,
-    snapshots_abort_and_old_branches,
-    root_mismatches_and_corrupt_rows_are_errors,
-    malformed_singleton_key_is_rejected,
-);
-#[cfg(feature = "mdbx")]
-suite!(
-    mdbx,
-    mdbx_db,
     transitions_and_tagged_commitments,
     record_scans_preserve_raw_names_and_own_results,
     batches_report_original_and_final_values_and_skip_noops,

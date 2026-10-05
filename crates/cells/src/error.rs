@@ -1,11 +1,11 @@
-//! [`CellParseError`]: why bytes are not a cell.
+//! [`CellValueParseError`]: why bytes are not a valid cell value.
 
 use core::fmt;
 
 use crate::types::CellType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellParseError {
+pub enum CellValueParseError {
     /// No metadata byte.
     Empty,
     /// Type id `0x00`, the absent marker. See the crate docs.
@@ -30,7 +30,7 @@ pub enum CellParseError {
     NotIndexable,
 }
 
-impl fmt::Display for CellParseError {
+impl fmt::Display for CellValueParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "cell is empty"),
@@ -52,7 +52,7 @@ impl fmt::Display for CellParseError {
     }
 }
 
-impl core::error::Error for CellParseError {}
+impl core::error::Error for CellValueParseError {}
 
 /// Failures reading or updating cell state. Mutation errors require aborting
 /// the caller's write transaction; previously applied changes are not undone.
@@ -65,7 +65,7 @@ pub enum CellError {
     #[error("invalid stored cell key: {0}")]
     Key(#[from] crate::CellKeyError),
     #[error("invalid stored cell value: {0}")]
-    Value(#[from] CellParseError),
+    Value(#[from] CellValueParseError),
     #[error("cell state does not match the supplied root")]
     RootMismatch,
 }

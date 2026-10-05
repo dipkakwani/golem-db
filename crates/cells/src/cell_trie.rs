@@ -11,6 +11,8 @@ pub(crate) struct CellTrie<'h, H: HashProvider> {
 }
 
 impl<'h, H: HashProvider> CellTrie<'h, H> {
+    /// Configure branch storage and the cell branch domain using the caller's
+    /// hash provider. This does not open a transaction or load a root.
     pub(crate) fn new(hasher: &'h H) -> Self {
         Self {
             trie: Trie::new(tables::CELL_TRIE, CELL_BRANCH_DOMAIN, hasher),
@@ -18,6 +20,9 @@ impl<'h, H: HashProvider> CellTrie<'h, H> {
         }
     }
 
+    /// Construct a virtual leaf binding the complete routing path to the tagged
+    /// cell value: `H(CELL_LEAF_DOMAIN || path || typeTag || value)`.
+    /// The caller supplies `path = H(encoded CellKey)`; no leaf row is written.
     fn leaf(&self, path: Hash, value: &CellValue) -> LeafRef<CELL_TRIE_PATH_BYTES> {
         LeafRef {
             path,
@@ -27,6 +32,10 @@ impl<'h, H: HashProvider> CellTrie<'h, H> {
         }
     }
 
+    /// Verify that the leaf at `H(key)` commits to the value read from the `Cell` table.
+    /// `None` requires absence from the trie. A different or missing commitment
+    /// returns `RootMismatch`; storage and branch-validation errors propagate.
+    /// This checks one address, not the entire state, and also applies to no-ops.
     pub(crate) fn check(
         &self,
         tx: &impl ReadTransaction,
@@ -41,6 +50,10 @@ impl<'h, H: HashProvider> CellTrie<'h, H> {
         Ok(())
     }
 
+    /// Insert or replace the leaf at `H(key)`, or remove it when `value` is `None`.
+    /// Returns the updated root and retains old branches for copy-on-write
+    /// history. The caller updates the `Cell` table in the same transaction
+    /// and must abort that transaction if a mutation fails.
     pub(crate) fn set(
         &self,
         tx: &mut impl WriteTransaction,
@@ -55,6 +68,13 @@ impl<'h, H: HashProvider> CellTrie<'h, H> {
         })
     }
 
+    /// Recover root metadata from a digest and the transaction's snapshot.
+    /// The empty-root digest requires an empty `Cell` table. An existing branch
+    /// is validated at its root row only, without auditing its subtree or the
+    /// `Cell` table. Otherwise the `Cell` table must contain exactly one valid
+    /// row whose key and value reconstruct the singleton hash.
+    /// Historical singleton recovery needs historical cell data or a retained
+    /// `RootRef`; an absent branch row alone never establishes a singleton.
     pub(crate) fn reopen(
         &self,
         tx: &impl ReadTransaction,

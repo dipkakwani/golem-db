@@ -49,13 +49,15 @@ impl<'h, H: HashProvider, const N: usize> Trie<'h, H, N> {
     /// ```compile_fail,E0080
     /// use golemdb_merkle::{Keccak256Hasher, Trie};
     /// use golemdb_storage::Table;
-    /// let _ = Trie::<_, 0>::new(Table("Branches"), 0x03, &Keccak256Hasher);
+    /// const EXAMPLE_BRANCH_DOMAIN: u8 = 0x03;
+    /// let _ = Trie::<_, 0>::new(Table("Branches"), EXAMPLE_BRANCH_DOMAIN, &Keccak256Hasher);
     /// ```
     ///
     /// ```compile_fail,E0080
     /// use golemdb_merkle::{Keccak256Hasher, Trie};
     /// use golemdb_storage::Table;
-    /// let _ = Trie::<_, 33>::new(Table("Branches"), 0x03, &Keccak256Hasher);
+    /// const EXAMPLE_BRANCH_DOMAIN: u8 = 0x03;
+    /// let _ = Trie::<_, 33>::new(Table("Branches"), EXAMPLE_BRANCH_DOMAIN, &Keccak256Hasher);
     /// ```
     pub fn new(table: Table, domain: u8, hasher: &'h H) -> Self {
         const {

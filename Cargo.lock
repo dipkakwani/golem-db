@@ -509,7 +509,6 @@ dependencies = [
  "golemdb-storage",
  "proptest",
  "serde",
- "tempfile",
  "thiserror 1.0.69",
 ]
 

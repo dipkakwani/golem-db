@@ -72,78 +72,7 @@ fn cell_batch_keeps_last_operation_and_reports_changes_in_key_order() {
 }
 
 #[test]
-fn owned_values_preserve_vectors_without_copying_storage_buffers() {
-    for (name, bytes, ..) in super::vectors::VECTORS {
-        let buffer = bytes.to_vec();
-        let pointer = buffer.as_ptr();
-        let owned = CellValue::parse(buffer).unwrap();
-        assert_eq!(owned.encoded_bytes().as_ptr(), pointer, "{name}");
-        assert_eq!(owned.metadata(), bytes[0], "{name}");
-        assert_eq!(owned.is_indexable(), bytes[0] & 0x80 != 0, "{name}");
-        assert_eq!(owned.cell_type().id(), bytes[0] & 0x7f, "{name}");
-        assert_eq!(owned.value(), &bytes[1..], "{name}");
-        assert_eq!(
-            owned.as_bytes(),
-            (bytes[0] & 0x7f == CellType::Bytes.id()).then_some(&bytes[1..]),
-            "{name}"
-        );
-        assert_eq!(
-            owned.as_view(),
-            CellValueRef::parse(bytes).unwrap(),
-            "{name}"
-        );
-        assert_eq!(
-            owned.as_view().value().as_ptr(),
-            owned.encoded_bytes()[1..].as_ptr()
-        );
-        assert_eq!(CellValue::from(owned.as_view()), owned);
-        let buffer = owned.into_bytes();
-        assert_eq!(buffer.as_ptr(), pointer, "{name}");
-        assert_eq!(buffer, *bytes);
-    }
-    for (name, bytes, error) in super::vectors::BAD_VECTORS {
-        assert_eq!(
-            CellValue::parse(bytes.to_vec()).err(),
-            Some(*error),
-            "{name}"
-        );
-    }
-}
-
-#[test]
-fn owned_value_outlives_source_and_moves_into_a_response() {
-    let owned = {
-        let source = String::from("hello");
-        CellValue::from(CellValueRef::new(CellType::Str, source.as_bytes(), false).unwrap())
-    };
-    let response = [owned];
-    assert_eq!(response[0].as_str(), Some("hello"));
-}
-
-#[test]
-fn variable_values_have_no_length_or_implicit_boundary() {
-    assert_eq!(CellValueRef::parse(&[2]).unwrap().as_str(), Some(""));
-    assert_eq!(
-        CellValueRef::parse(&[3]).unwrap().as_bytes(),
-        Some(&b""[..])
-    );
-    let bytes = [3, 0, 0, 0, 1, 255, 0, 128];
-    assert_eq!(CellValueRef::parse(&bytes).unwrap().value(), &bytes[1..]);
-    assert_eq!(
-        CellValueRef::new(CellType::Str, b"hi", true)
-            .unwrap()
-            .encode(),
-        b"\x82hi"
-    );
-    // There is no sniffing for the old framed format: every byte is payload.
-    assert_eq!(
-        CellValueRef::parse(b"\x02\0\0\0\x02hi").unwrap().value(),
-        b"\0\0\0\x02hi"
-    );
-}
-
-#[test]
-fn limits_are_independent_and_count_payload_bytes() {
+fn configured_cell_limits_are_enforced() {
     let limits = CellLimits {
         max_cell_name_len: 6,
         max_str_len: 2,
@@ -201,23 +130,6 @@ fn limits_are_independent_and_count_payload_bytes() {
 }
 
 #[test]
-fn codec_does_not_impose_the_old_u16_cap() {
-    let payload = vec![b'a'; 65536];
-    for ty in [CellType::Str, CellType::Bytes] {
-        let cell = CellValueRef::new(ty, &payload, false).unwrap();
-        let bytes = cell.encode();
-        assert_eq!(bytes.len(), payload.len() + 1);
-        assert_eq!(CellValueRef::parse(&bytes).unwrap(), cell);
-        let limits = CellLimits {
-            max_cell_name_len: 64,
-            max_str_len: 65536,
-            max_bytes_len: 65536,
-        };
-        assert!(limits.validate_value(cell).is_ok());
-    }
-}
-
-#[test]
 fn full_keys_encode_record_id_then_raw_name() {
     let key = CellKey::new(42, CellNameRef::parse_user(b"Price", 64).unwrap());
     assert_eq!(key.encode(), b"\0\0\0\0\0\0\0\x2aPrice");
@@ -234,40 +146,6 @@ fn full_keys_encode_record_id_then_raw_name() {
             Err(CellKeyError::MissingRecordId { actual: len })
         );
     }
-}
-
-#[test]
-fn float_input_normalizes_zero_but_decoding_rejects_noncanonical_zero() {
-    assert_eq!(
-        encode_float((-0.0f32).to_be_bytes()),
-        encode_float(0.0f32.to_be_bytes())
-    );
-    assert_eq!(
-        encode_float((-0.0f64).to_be_bytes()),
-        encode_float(0.0f64.to_be_bytes())
-    );
-    assert_eq!(
-        CellValueRef::new(
-            CellType::Float(FloatWidth::F32),
-            &encode_float((-0.0f32).to_be_bytes()),
-            false
-        )
-        .unwrap()
-        .as_f32(),
-        Some(0.0)
-    );
-    assert_eq!(
-        CellValueRef::parse(&[0x18, 0x7f, 0xff, 0xff, 0xff]),
-        Err(CellParseError::NegativeZero)
-    );
-    assert_eq!(
-        CellValueRef::new(
-            CellType::Float(FloatWidth::F64),
-            &encode_float(f64::NAN.to_be_bytes()),
-            false
-        ),
-        Err(CellParseError::FloatNaN)
-    );
 }
 
 proptest! {

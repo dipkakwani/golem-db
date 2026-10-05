@@ -7,6 +7,10 @@ use golemdb_merkle::{
 use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction};
 
 const HASH: Keccak256Hasher = Keccak256Hasher;
+const BENCH_LEAF_DOMAIN: u8 = 0x04;
+const BENCH_BRANCH_DOMAIN: u8 = 0x05;
+const BENCH_NODE_DOMAIN: u8 = 0x03;
+
 const TABLE: Table = Table("BenchBranches");
 
 fn branches(c: &mut Criterion) {
@@ -50,7 +54,7 @@ fn branches(c: &mut Criterion) {
                 hasher: &H,
             ) {
                 group.bench_function(BenchmarkId::new(format!("hash/{name}"), parameter), |b| {
-                    b.iter(|| black_box(node).hash(0x03, hasher))
+                    b.iter(|| black_box(node).hash(BENCH_NODE_DOMAIN, hasher))
                 });
             }
             hash_node(
@@ -76,7 +80,7 @@ fn leaf<const N: usize>(id: u32, clustered: bool, hasher: &impl HashProvider) ->
     path[N - 4..].copy_from_slice(&id.to_be_bytes());
     LeafRef {
         path,
-        hash: hasher.hash_parts(&[&[0x04], &path]),
+        hash: hasher.hash_parts(&[&[BENCH_LEAF_DOMAIN], &path]),
     }
 }
 
@@ -85,7 +89,7 @@ fn tries<const N: usize>(c: &mut Criterion, algorithm: &str, hasher: &impl HashP
     for count in [64, 1024] {
         for clustered in [false, true] {
             let db = MemoryDatabase::new();
-            let trie = Trie::<_, N>::new(TABLE, 0x05, hasher);
+            let trie = Trie::<_, N>::new(TABLE, BENCH_BRANCH_DOMAIN, hasher);
             let mut tx = db.begin_write().unwrap();
             let mut root = RootRef::Empty;
             for i in 0..count {

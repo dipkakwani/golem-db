@@ -7,11 +7,11 @@ use proptest::prelude::*;
 
 use crate::*;
 
-/// The cap the accept/reject tables are written against. Long enough that
+/// Explicit fixture cap, not a default deployment limit. Long enough that
 /// only the `max_len` rows below are near it.
-const MAX: usize = 64;
+const TEST_MAX_CELL_NAME_LEN: usize = 64;
 
-/// Names `parse_user` must accept, at `MAX`.
+/// Names `parse_user` must accept, at `TEST_MAX_CELL_NAME_LEN`.
 #[rustfmt::skip]
 const ACCEPT: &[&str] = &[
     "$owner",
@@ -36,29 +36,29 @@ const ACCEPT: &[&str] = &[
 /// Names `parse_user` must reject, each with the error it must give.
 #[rustfmt::skip]
 const REJECT: &[(&str, &[u8], CellNameError)] = &[
-    ("empty",            b"",        CellNameError::Empty),
-    ("leading digit",    b"9lives",  CellNameError::NotAlphaFirst(b'9')),
-    ("leading separator", b"_private", CellNameError::NotAlphaFirst(b'_')),
+    ("empty",             b"",            CellNameError::Empty),
+    ("leading digit",     b"9lives",      CellNameError::NotAlphaFirst(b'9')),
+    ("leading separator", b"_private",    CellNameError::NotAlphaFirst(b'_')),
     // Engine prefixes cannot be user names.
-    ("engine sigil #",   b"#key",    CellNameError::NotAlphaFirst(b'#')),
-    ("admin sigil @",    b"@admin",  CellNameError::NotAlphaFirst(b'@')),
-    ("dollar alone",     b"$",       CellNameError::Empty),
-    ("double dollar",    b"$$x",     CellNameError::NotAlphaFirst(b'$')),
-    ("dollar digit",     b"$1",      CellNameError::NotAlphaFirst(b'1')),
-    ("interior dollar",  b"a$b",     CellNameError::InvalidByte { at: 1, byte: b'$' }),
-    ("prefixed space",   b"$a b",    CellNameError::InvalidByte { at: 2, byte: b' ' }),
-    ("space",            b"pri ce",  CellNameError::InvalidByte { at: 3, byte: b' ' }),
-    ("NUL",              b"pri\x00ce", CellNameError::InvalidByte { at: 3, byte: 0x00 }),
+    ("engine sigil #",    b"#key",        CellNameError::NotAlphaFirst(b'#')),
+    ("admin sigil @",     b"@admin",      CellNameError::NotAlphaFirst(b'@')),
+    ("dollar alone",      b"$",           CellNameError::Empty),
+    ("double dollar",     b"$$x",         CellNameError::NotAlphaFirst(b'$')),
+    ("dollar digit",      b"$1",          CellNameError::NotAlphaFirst(b'1')),
+    ("interior dollar",   b"a$b",         CellNameError::InvalidByte { at: 1, byte: b'$' }),
+    ("prefixed space",    b"$a b",        CellNameError::InvalidByte { at: 2, byte: b' ' }),
+    ("space",             b"pri ce",      CellNameError::InvalidByte { at: 3, byte: b' ' }),
+    ("NUL",               b"pri\x00ce",   CellNameError::InvalidByte { at: 3, byte: 0x00 }),
     // "café" — the é is two bytes, and neither is ASCII.
-    ("non-ASCII",        b"caf\xc3\xa9", CellNameError::InvalidByte { at: 3, byte: 0xC3 }),
-    ("punctuation",      b"price!",  CellNameError::InvalidByte { at: 5, byte: b'!' }),
+    ("non-ASCII",         b"caf\xc3\xa9", CellNameError::InvalidByte { at: 3, byte: 0xC3 }),
+    ("punctuation",       b"price!",      CellNameError::InvalidByte { at: 5, byte: b'!' }),
 ];
 
 #[test]
 fn user_names_accept_the_grammar() {
     for name in ACCEPT {
-        let key =
-            CellNameRef::parse_user(name.as_bytes(), MAX).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let key = CellNameRef::parse_user(name.as_bytes(), TEST_MAX_CELL_NAME_LEN)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(key.as_bytes(), name.as_bytes(), "{name}");
     }
 }
@@ -66,7 +66,7 @@ fn user_names_accept_the_grammar() {
 #[test]
 fn user_names_reject_for_the_stated_reason() {
     for (label, name, expected) in REJECT {
-        let got = CellNameRef::parse_user(name, MAX)
+        let got = CellNameRef::parse_user(name, TEST_MAX_CELL_NAME_LEN)
             .map(|k| k.as_bytes())
             .expect_err(&format!("{label}: parsed, should have failed"));
         assert_eq!(got, *expected, "{label}");
@@ -77,18 +77,18 @@ fn user_names_reject_for_the_stated_reason() {
 /// name passes under one cap and fails under a smaller one.
 #[test]
 fn length_cap_comes_from_the_caller() {
-    let name = vec![b'a'; MAX];
+    let name = vec![b'a'; TEST_MAX_CELL_NAME_LEN];
     assert!(
-        CellNameRef::parse_user(&name, MAX).is_ok(),
+        CellNameRef::parse_user(&name, TEST_MAX_CELL_NAME_LEN).is_ok(),
         "exactly max_len"
     );
 
-    let over = vec![b'a'; MAX + 1];
+    let over = vec![b'a'; TEST_MAX_CELL_NAME_LEN + 1];
     assert_eq!(
-        CellNameRef::parse_user(&over, MAX),
+        CellNameRef::parse_user(&over, TEST_MAX_CELL_NAME_LEN),
         Err(CellNameError::TooLong {
-            max: MAX,
-            actual: MAX + 1
+            max: TEST_MAX_CELL_NAME_LEN,
+            actual: TEST_MAX_CELL_NAME_LEN + 1
         })
     );
 
@@ -110,7 +110,7 @@ fn engine_names_take_a_sigil_then_the_grammar() {
         );
         // …and the data plane cannot reach any of them.
         assert!(
-            CellNameRef::parse_user(key.as_bytes(), MAX).is_err(),
+            CellNameRef::parse_user(key.as_bytes(), TEST_MAX_CELL_NAME_LEN).is_err(),
             "{key}"
         );
     }
@@ -165,7 +165,9 @@ fn raw_keys_bypass_the_grammar() {
 fn owned_keys_order_bytewise_and_borrow_as_bytes() {
     let mut map = BTreeMap::new();
     for name in ["price", "Price", "a", "price.usd", "priceX"] {
-        let key = CellName::from(CellNameRef::parse_user(name.as_bytes(), MAX).unwrap());
+        let key = CellName::from(
+            CellNameRef::parse_user(name.as_bytes(), TEST_MAX_CELL_NAME_LEN).unwrap(),
+        );
         map.insert(key, name);
     }
 
@@ -185,7 +187,7 @@ fn owned_keys_order_bytewise_and_borrow_as_bytes() {
 
 #[test]
 fn owned_and_borrowed_round_trip() {
-    let key = CellNameRef::parse_user(b"erc20:balance", MAX).unwrap();
+    let key = CellNameRef::parse_user(b"erc20:balance", TEST_MAX_CELL_NAME_LEN).unwrap();
     let owned: CellName = key.into();
     assert_eq!(owned.as_bytes(), key.as_bytes());
     assert_eq!(owned.to_string(), "erc20:balance");

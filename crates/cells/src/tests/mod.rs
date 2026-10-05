@@ -18,6 +18,12 @@ fn vectors_decode_and_re_encode() {
         assert_eq!(cell.value(), *value, "{name}");
         assert_eq!(cell.is_indexable(), *indexable, "{name}");
         assert_eq!(cell.encode(), *bytes, "{name}");
+
+        let owned = CellValue::parse(bytes.to_vec()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(owned.cell_type(), *ty, "{name}");
+        assert_eq!(owned.value(), *value, "{name}");
+        assert_eq!(owned.is_indexable(), *indexable, "{name}");
+        assert_eq!(owned.into_bytes(), *bytes, "{name}");
     }
 }
 
@@ -26,7 +32,7 @@ fn vectors_cover_every_type() {
     for id in 0..128 {
         if CellType::from_id(id).is_ok() {
             assert!(
-                VECTORS.iter().any(|(_, b, ..)| b[0] & !INDEXABLE_BIT == id),
+                VECTORS.iter().any(|(_, b, ..)| b[0] & TYPE_MASK == id),
                 "type id {id} has no vector"
             );
         }
@@ -37,16 +43,59 @@ fn vectors_cover_every_type() {
 fn bad_vectors_are_rejected_for_the_stated_reason() {
     for (name, bytes, expected) in BAD_VECTORS {
         assert_eq!(CellValueRef::parse(bytes).err(), Some(*expected), "{name}");
+        assert_eq!(
+            CellValue::parse(bytes.to_vec()).err(),
+            Some(*expected),
+            "{name}"
+        );
     }
+}
+
+#[test]
+fn codec_should_support_larger_than_u16_max() {
+    let limits = CellLimits {
+        max_cell_name_len: 1,
+        max_str_len: LARGE_PAYLOAD_LEN as u32,
+        max_bytes_len: LARGE_PAYLOAD_LEN as u32,
+    };
+    for (ty, wire, payload) in large_value_vectors() {
+        let cell = CellValueRef::parse(&wire).unwrap();
+        assert_eq!(cell.cell_type(), ty);
+        assert_eq!(cell.value(), payload);
+        assert!(!cell.is_indexable());
+        assert_eq!(cell.encode(), wire);
+        assert_eq!(
+            CellValueRef::new(ty, &payload, false).unwrap().encode(),
+            wire
+        );
+        assert!(limits.validate_value(cell).is_ok());
+    }
+}
+
+#[test]
+fn float_input_vectors_encode_and_validate() {
+    fn check<const N: usize>(ty: CellType, vectors: &[FloatInputVector<N>]) {
+        for (name, native, expected, validation) in vectors {
+            let encoded = encode_float(*native);
+            assert_eq!(encoded, *expected, "{name}");
+            assert_eq!(
+                CellValueRef::new(ty, &encoded, false).map(|_| ()),
+                *validation,
+                "{name}"
+            );
+        }
+    }
+    check(CellType::Float(FloatWidth::F32), FLOAT32_INPUTS);
+    check(CellType::Float(FloatWidth::F64), FLOAT64_INPUTS);
 }
 
 #[test]
 fn id_space_matches_the_spec() {
     for id in 0..128 {
         match (id, CellType::from_id(id)) {
-            (0, got) => assert_eq!(got, Err(CellParseError::AbsentTag)),
+            (0, got) => assert_eq!(got, Err(CellValueParseError::AbsentTag)),
             (5..=7 | 26 | 27 | 30.., got) => {
-                assert_eq!(got, Err(CellParseError::ReservedType(id)))
+                assert_eq!(got, Err(CellValueParseError::ReservedType(id)))
             }
             (_, got) => assert_eq!(got.map(CellType::id), Ok(id), "id {id}"),
         }
@@ -63,7 +112,7 @@ fn every_metadata_byte_and_length() {
     for metadata in 0..=u8::MAX {
         for len in 0..=payload.len() {
             let bytes = [&[metadata][..], &payload[..len]].concat();
-            let accepted = match CellType::from_id(metadata & !INDEXABLE_BIT) {
+            let accepted = match CellType::from_id(metadata & TYPE_MASK) {
                 Err(_) => false,
                 Ok(CellType::Bytes) if metadata & INDEXABLE_BIT != 0 => false,
                 Ok(ty) => match ty.width() {
@@ -169,7 +218,7 @@ fn accessors_are_exclusive() {
 #[test]
 fn bytes_accepts_what_str_rejects() {
     for (name, bytes, expected) in BAD_VECTORS {
-        if let CellParseError::InvalidUtf8 { .. } = expected {
+        if let CellValueParseError::InvalidUtf8 { .. } = expected {
             let as_bytes = [&[CellType::Bytes.id()][..], &bytes[1..]].concat();
             let cell = CellValueRef::parse(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(cell.cell_type(), CellType::Bytes, "{name}");

@@ -7,7 +7,7 @@ use crate::{CELL_TRIE_PATH_BYTES, CellKey, CellValue, Result, cell_trie::CellTri
 
 /// Cell storage and commitment over caller-owned transactions.
 ///
-/// Use one hash provider and a root matching the transaction's flat cell state.
+/// Use one hash provider and a root matching the transaction's `Cell` table.
 /// `apply` belongs at seal/commit, after the engine has formed a net batch. Seal
 /// requires a staged transaction; this interface does not create an overlay.
 /// Abort the transaction after any mutation error and publish roots only after
@@ -46,7 +46,7 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         }
     }
 
-    /// Read the snapshot's flat value. The owned result outlives the transaction.
+    /// Read a value from the snapshot's `Cell` table. The owned result outlives the transaction.
     /// This is not a proof or an authenticated read against a supplied root.
     pub fn get(&self, tx: &impl ReadTransaction, key: &CellKey) -> Result<Option<CellValue>> {
         read_value(tx, &key.encode())
@@ -65,9 +65,9 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         })
     }
 
-    /// Recover root metadata. Empty/singleton recovery uses the flat table from
+    /// Recover root metadata. Empty/singleton recovery uses the `Cell` table from
     /// the same snapshot; a branch root's own row is validated, not its entire
-    /// subtree or correspondence with all flat rows. Historical singleton
+    /// subtree or correspondence with all `Cell` rows. Historical singleton
     /// recovery needs historical values or retained `RootRef` metadata.
     pub fn reopen(
         &self,
@@ -78,7 +78,7 @@ impl<'h, H: HashProvider> Cells<'h, H> {
     }
 
     /// Apply each key's final value once, skipping no-ops and absent deletions.
-    /// Affected commitments are checked against the original flat values even
+    /// Affected commitments are checked against the original `Cell` values even
     /// for no-ops. This is not a whole-state audit; the caller must supply the
     /// matching root. Errors require aborting the enclosing transaction.
     pub fn apply(
@@ -87,47 +87,70 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         mut root: RootRef<CELL_TRIE_PATH_BYTES>,
         changes: impl IntoIterator<Item = CellChange>,
     ) -> Result<CellsUpdate> {
-        let mut changes: Vec<_> = changes
-            .into_iter()
-            .map(|change| match change {
-                CellChange::Put { key, value } => (key, Some(value)),
-                CellChange::Delete { key } => (key, None),
-            })
-            .collect();
-        // Stable sorting preserves input order for each key. The value must
-        // not affect ordering: the final input operation wins.
-        changes.sort_by(|a, b| a.0.cmp(&b.0));
-        changes.dedup_by(|later, earlier| {
-            if later.0 == earlier.0 {
-                // dedup_by keeps the earlier entry; move the last value into it.
-                earlier.1 = later.1.take();
-                true
-            } else {
-                false
-            }
-        });
         let mut changed_cells = Vec::new();
-        for (key, after) in changes {
-            let encoded_key = key.encode();
-            let before = read_value(tx, &encoded_key)?;
-            self.trie.check(tx, root, &encoded_key, before.as_ref())?;
-            if before == after {
-                continue;
+        for (key, after) in normalize_changes(changes) {
+            if let Some(change) = self.apply_change(tx, &mut root, key, after)? {
+                changed_cells.push(change);
             }
-            root = self.trie.set(tx, root, &encoded_key, after.as_ref())?;
-            match &after {
-                Some(value) => tx.put(tables::CELL, &encoded_key, value.encoded_bytes())?,
-                None => {
-                    tx.delete(tables::CELL, &encoded_key)?;
-                }
-            }
-            changed_cells.push(CellValueChange { key, before, after });
         }
         Ok(CellsUpdate {
             root,
             changed_cells,
         })
     }
+
+    /// Check the original commitment, then update the trie and `Cell` row for one
+    /// net change. No-ops are still checked but do not write or produce a change.
+    /// Advance `root` after both writes succeed; any error requires a tx abort.
+    fn apply_change(
+        &self,
+        tx: &mut impl WriteTransaction,
+        root: &mut RootRef<CELL_TRIE_PATH_BYTES>,
+        key: CellKey,
+        after: Option<CellValue>,
+    ) -> Result<Option<CellValueChange>> {
+        let encoded_key = key.encode();
+        let before = read_value(tx, &encoded_key)?;
+        self.trie.check(tx, *root, &encoded_key, before.as_ref())?;
+        if before == after {
+            return Ok(None);
+        }
+        let updated_root = self.trie.set(tx, *root, &encoded_key, after.as_ref())?;
+        match &after {
+            Some(value) => tx.put(tables::CELL, &encoded_key, value.encoded_bytes())?,
+            None => {
+                tx.delete(tables::CELL, &encoded_key)?;
+            }
+        }
+        *root = updated_root;
+        Ok(Some(CellValueChange { key, before, after }))
+    }
+}
+
+/// Keep the final operation for each key and return the net batch in key order.
+fn normalize_changes(
+    changes: impl IntoIterator<Item = CellChange>,
+) -> Vec<(CellKey, Option<CellValue>)> {
+    let mut changes: Vec<_> = changes
+        .into_iter()
+        .map(|change| match change {
+            CellChange::Put { key, value } => (key, Some(value)),
+            CellChange::Delete { key } => (key, None),
+        })
+        .collect();
+    // Stable sorting preserves input order for each key. The value must
+    // not affect ordering: the final input operation wins.
+    changes.sort_by(|a, b| a.0.cmp(&b.0));
+    changes.dedup_by(|later, earlier| {
+        if later.0 == earlier.0 {
+            // dedup_by keeps the earlier entry; move the last value into it.
+            earlier.1 = later.1.take();
+            true
+        } else {
+            false
+        }
+    });
+    changes
 }
 
 fn read_value(tx: &impl ReadTransaction, key: &[u8]) -> Result<Option<CellValue>> {

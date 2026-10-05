@@ -14,7 +14,7 @@
 //! No value has a length prefix. Concatenating cells requires external boundaries.
 //!
 //! Type id `0x00` is not a type. It is the branch overlay's "absent" marker
-//! ([`CellParseError::AbsentTag`]); a tombstone is `Option<CellValue>::None`.
+//! ([`CellValueParseError::AbsentTag`]); a tombstone is `Option<CellValue>::None`.
 //!
 //! # Order encoding
 //!
@@ -68,10 +68,9 @@
 //! # Transactional storage
 //!
 //! [`Cells`] reads owned values, scans a record, and applies a net batch to both
-//! the flat `Cell` table and its branch-only `CellTrie`. The caller supplies the
+//! the `Cell` table and its branch-only `CellTrie`. The caller supplies the
 //! matching root and owns the transaction; it can write history and the head in
 //! the same transaction. Deployment admission and index updates are engine work.
-//! Enable `mdbx` for persistent storage through the same interface.
 //!
 //! ```
 //! use golemdb_cells::{CellChange, CellKey, CellNameRef, CellValue, Cells};
@@ -114,7 +113,7 @@ mod tests;
 
 pub use cells::{CellChange, CellScan, CellValueChange, Cells, CellsUpdate};
 pub use config::{CellLimitError, CellLimits};
-pub use error::{CellError, CellParseError, Result};
+pub use error::{CellError, CellValueParseError, Result};
 pub use key::{CellKey, CellKeyError};
 pub use name::{CellName, CellNameError, CellNameRef, reserved};
 pub use order::{decode_float, encode_float, flip_sign};
@@ -127,3 +126,6 @@ pub const CELL_TRIE_PATH_BYTES: usize = size_of::<golemdb_merkle::Hash>();
 /// The metadata byte's high bit: whether the cell is indexable. The low 7
 /// bits are the type id.
 pub(crate) const INDEXABLE_BIT: u8 = 0x80;
+
+/// The metadata byte’s low seven bits: the cell type id.
+pub(crate) const TYPE_MASK: u8 = !INDEXABLE_BIT;
