@@ -22,6 +22,8 @@ The unpublished integration-test package is a workspace member only.
   read/write views, encoded-key prefix scans, atomic writes, checkpoints and undo;
   seal buffers cell/index updates and roots; commit atomically persists them and
   advances head, with history deferred
+- `crates/record` (package `golemdb-record`) — caller-keyed record CRUD, allocation,
+  identity and bindings; branch work-in-progress and committed-head reads
 - `crates/integration-tests` (package `golemdb-integration-tests`) — backend and
   cross-layer integration tests, plus the index backend benchmarks
 
@@ -56,7 +58,7 @@ by itself make a test an integration test. Hash/codec vectors, trie algorithms,
 cell batch semantics, bitmap/term encoding, branch state and lock behavior, and
 local error handling belong here.
 
-`crates/integration-tests/tests/` contains the `branch`, `index`, and `storage`
+`crates/integration-tests/tests/` contains the `branch`, `index`, `record`, and `storage`
 targets. These cover MDBX persistence, reopening, limits, and transactions, plus
 scenarios that verify cells, indexes, trie roots, and head publication together.
 Some end-to-end scenarios also run against memory storage as a backend comparison.
@@ -64,7 +66,7 @@ Fault-injection fixtures stay with the behavior they test: local branch admissio
 and panic recovery use unit fixtures; publication failures across storage tables
 use integration fixtures.
 
-`branch`, `cells`, `index`, and `merkle` depend on the shared storage abstraction,
+`branch`, `cells`, `index`, `merkle`, and `record` depend on the shared storage abstraction,
 never the MDBX adapter. The integration-test package combines them with
 `golemdb-storage-mdbx`; MDBX tests run by default there, without feature gates.
 Import MDBX types from `golemdb_storage_mdbx` and traits from `golemdb_storage`.
