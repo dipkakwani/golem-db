@@ -1,6 +1,7 @@
 //! Unit tests: [`vectors`] holds the accept/reject tables, [`properties`] the
 //! generated-input checks, [`order`] stored-form ordering, [`keys`] cell names.
 
+mod foundation;
 mod keys;
 mod order;
 mod properties;
@@ -12,11 +13,17 @@ use vectors::*;
 #[test]
 fn vectors_decode_and_re_encode() {
     for (name, bytes, indexable, ty, value) in VECTORS {
-        let cell = CellValue::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let cell = CellValueRef::parse(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(cell.cell_type(), *ty, "{name}");
         assert_eq!(cell.value(), *value, "{name}");
         assert_eq!(cell.is_indexable(), *indexable, "{name}");
         assert_eq!(cell.encode(), *bytes, "{name}");
+
+        let owned = CellValue::parse(bytes.to_vec()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(owned.cell_type(), *ty, "{name}");
+        assert_eq!(owned.value(), *value, "{name}");
+        assert_eq!(owned.is_indexable(), *indexable, "{name}");
+        assert_eq!(owned.into_bytes(), *bytes, "{name}");
     }
 }
 
@@ -25,7 +32,7 @@ fn vectors_cover_every_type() {
     for id in 0..128 {
         if CellType::from_id(id).is_ok() {
             assert!(
-                VECTORS.iter().any(|(_, b, ..)| b[0] & !INDEXABLE_BIT == id),
+                VECTORS.iter().any(|(_, b, ..)| b[0] & TYPE_MASK == id),
                 "type id {id} has no vector"
             );
         }
@@ -35,17 +42,60 @@ fn vectors_cover_every_type() {
 #[test]
 fn bad_vectors_are_rejected_for_the_stated_reason() {
     for (name, bytes, expected) in BAD_VECTORS {
-        assert_eq!(CellValue::parse(bytes).err(), Some(*expected), "{name}");
+        assert_eq!(CellValueRef::parse(bytes).err(), Some(*expected), "{name}");
+        assert_eq!(
+            CellValue::parse(bytes.to_vec()).err(),
+            Some(*expected),
+            "{name}"
+        );
     }
+}
+
+#[test]
+fn codec_should_support_larger_than_u16_max() {
+    let limits = CellLimits {
+        max_cell_name_len: 1,
+        max_str_len: LARGE_PAYLOAD_LEN as u32,
+        max_bytes_len: LARGE_PAYLOAD_LEN as u32,
+    };
+    for (ty, wire, payload) in large_value_vectors() {
+        let cell = CellValueRef::parse(&wire).unwrap();
+        assert_eq!(cell.cell_type(), ty);
+        assert_eq!(cell.value(), payload);
+        assert!(!cell.is_indexable());
+        assert_eq!(cell.encode(), wire);
+        assert_eq!(
+            CellValueRef::new(ty, &payload, false).unwrap().encode(),
+            wire
+        );
+        assert!(limits.validate_value(cell).is_ok());
+    }
+}
+
+#[test]
+fn float_input_vectors_encode_and_validate() {
+    fn check<const N: usize>(ty: CellType, vectors: &[FloatInputVector<N>]) {
+        for (name, native, expected, validation) in vectors {
+            let encoded = encode_float(*native);
+            assert_eq!(encoded, *expected, "{name}");
+            assert_eq!(
+                CellValueRef::new(ty, &encoded, false).map(|_| ()),
+                *validation,
+                "{name}"
+            );
+        }
+    }
+    check(CellType::Float(FloatWidth::F32), FLOAT32_INPUTS);
+    check(CellType::Float(FloatWidth::F64), FLOAT64_INPUTS);
 }
 
 #[test]
 fn id_space_matches_the_spec() {
     for id in 0..128 {
         match (id, CellType::from_id(id)) {
-            (0, got) => assert_eq!(got, Err(CellParseError::AbsentTag)),
+            (0, got) => assert_eq!(got, Err(CellValueParseError::AbsentTag)),
             (5..=7 | 26 | 27 | 30.., got) => {
-                assert_eq!(got, Err(CellParseError::ReservedType(id)))
+                assert_eq!(got, Err(CellValueParseError::ReservedType(id)))
             }
             (_, got) => assert_eq!(got.map(CellType::id), Ok(id), "id {id}"),
         }
@@ -56,22 +106,21 @@ fn id_space_matches_the_spec() {
 /// and whatever parses re-encodes to the same bytes.
 #[test]
 fn every_metadata_byte_and_length() {
-    // `00 00 00 01` is a length prefix of 1 for `str`/`bytes`, followed by
-    // `01`s, which are valid content for every type but floats.
+    // Payload bytes are content only; the slice supplies the boundary.
     let mut payload = vec![0x00, 0x00, 0x00, 0x01];
     payload.extend([0x01; 36]);
     for metadata in 0..=u8::MAX {
         for len in 0..=payload.len() {
             let bytes = [&[metadata][..], &payload[..len]].concat();
-            let accepted = match CellType::from_id(metadata & !INDEXABLE_BIT) {
+            let accepted = match CellType::from_id(metadata & TYPE_MASK) {
                 Err(_) => false,
                 Ok(CellType::Bytes) if metadata & INDEXABLE_BIT != 0 => false,
                 Ok(ty) => match ty.width() {
                     Some(n) => len == n && ty.validate(&payload[..n]).is_ok(),
-                    None => len == 5,
+                    None => true,
                 },
             };
-            match CellValue::parse(&bytes) {
+            match CellValueRef::parse(&bytes) {
                 Ok(cell) => {
                     assert!(accepted, "{metadata:#04x} len {len}: should fail");
                     assert_eq!(cell.encode(), bytes, "{metadata:#04x} len {len}");
@@ -82,29 +131,29 @@ fn every_metadata_byte_and_length() {
     }
 }
 
-/// `0x00` is not a type, so a tombstone is `Option<CellValue>::None`, which
+/// `0x00` is not a type, so a tombstone is `Option<CellValueRef>::None`, which
 /// costs no space.
 #[test]
 fn absence_is_a_free_option() {
     assert_eq!(
-        size_of::<Option<CellValue<'_>>>(),
-        size_of::<CellValue<'_>>()
+        size_of::<Option<CellValueRef<'_>>>(),
+        size_of::<CellValueRef<'_>>()
     );
 }
 
 #[test]
 fn accessors_decode_their_rust_equivalents() {
-    fn parse(bytes: &[u8]) -> CellValue<'_> {
-        CellValue::parse(bytes).unwrap()
+    fn parse(bytes: &[u8]) -> CellValue {
+        CellValue::parse(bytes.to_vec()).unwrap()
     }
     fn cell(id: u8, value: &[u8]) -> Vec<u8> {
         [&[id][..], value].concat()
     }
 
     assert_eq!(parse(&[0x01, 1]).as_bool(), Some(true));
-    assert_eq!(parse(&[0x02, 0, 0, 0, 2, b'h', b'i']).as_str(), Some("hi"));
+    assert_eq!(parse(&[0x02, b'h', b'i']).as_str(), Some("hi"));
     assert_eq!(
-        parse(&[0x03, 0, 0, 0, 2, 0xDE, 0xAD]).as_bytes(),
+        parse(&[0x03, 0xDE, 0xAD]).as_bytes(),
         Some(&[0xDE, 0xAD][..])
     );
     assert_eq!(parse(&[0x08, 1, 2, 3, 4]).as_bytes4(), Some([1, 2, 3, 4]));
@@ -150,7 +199,7 @@ fn accessors_are_exclusive() {
     let payload = [0x80, 0, 0, 0, 0, 0, 0, 1];
     for id in [0x09, 0x0D, 0x11, 0x15, 0x19, 0x1D] {
         let bytes = [&[id][..], &payload].concat();
-        let cell = CellValue::parse(&bytes).unwrap();
+        let cell = CellValue::parse(bytes).unwrap();
         let hits = [
             cell.as_bytes8().is_some(),
             cell.as_u64().is_some(),
@@ -169,55 +218,10 @@ fn accessors_are_exclusive() {
 #[test]
 fn bytes_accepts_what_str_rejects() {
     for (name, bytes, expected) in BAD_VECTORS {
-        if let CellParseError::InvalidUtf8 { .. } = expected {
+        if let CellValueParseError::InvalidUtf8 { .. } = expected {
             let as_bytes = [&[CellType::Bytes.id()][..], &bytes[1..]].concat();
-            let (cell, _) =
-                CellValue::parse_prefix(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let cell = CellValueRef::parse(&as_bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(cell.cell_type(), CellType::Bytes, "{name}");
         }
-    }
-}
-
-#[test]
-fn over_long_values_cannot_be_built() {
-    let too_long = [b'a'; MAX_VALUE_LEN + 1];
-    for ty in [CellType::Str, CellType::Bytes] {
-        assert_eq!(
-            CellValue::new(ty, &too_long, false),
-            Err(CellParseError::TooLong {
-                actual: MAX_VALUE_LEN + 1
-            })
-        );
-    }
-    assert!(CellValue::new(CellType::Bytes, &[0; MAX_VALUE_LEN], false).is_ok());
-}
-
-/// Packed cells walk back unchanged, and cutting the run anywhere is caught
-/// rather than read as a shorter valid run.
-#[test]
-fn packed_cells_walk_and_truncation_is_caught() {
-    let seven = 7u64.to_be_bytes();
-    let cells = [
-        CellValue::new(CellType::Str, b"hi", true).unwrap(),
-        CellValue::new(CellType::Uint(Width::W8), &seven, false).unwrap(),
-        CellValue::new(CellType::Bytes, &[0xDE, 0xAD], false).unwrap(),
-        CellValue::new(CellType::Bool, &[1], false).unwrap(),
-    ];
-    let mut packed = Vec::new();
-    for cell in &cells {
-        cell.encode_into(&mut packed);
-    }
-
-    let walk = |mut rest: &[u8]| {
-        let mut walked = 0;
-        while let Ok((_, tail)) = CellValue::parse_prefix(rest) {
-            walked += 1;
-            rest = tail;
-        }
-        (walked, rest.is_empty())
-    };
-    assert_eq!(walk(&packed), (cells.len(), true));
-    for cut in 1..packed.len() {
-        assert_ne!(walk(&packed[..cut]), (cells.len(), true), "cut at {cut}");
     }
 }

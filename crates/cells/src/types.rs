@@ -1,7 +1,6 @@
 //! [`CellType`]: the 7-bit type-id space, decoded.
 
-use crate::MAX_VALUE_LEN;
-use crate::error::CellParseError;
+use crate::error::CellValueParseError;
 use crate::order::decode_float;
 
 /// The `w` of a `4 · 2^w`-byte family: 4, 8, 16 or 32 bytes. A family's four
@@ -100,9 +99,9 @@ impl CellType {
     }
 
     /// Decode a 7-bit type id.
-    pub const fn from_id(id: u8) -> Result<Self, CellParseError> {
+    pub const fn from_id(id: u8) -> Result<Self, CellValueParseError> {
         match id {
-            0 => Err(CellParseError::AbsentTag),
+            0 => Err(CellValueParseError::AbsentTag),
             1 => Ok(Self::Bool),
             2 => Ok(Self::Str),
             3 => Ok(Self::Bytes),
@@ -115,11 +114,11 @@ impl CellType {
             25 => Ok(Self::Float(FloatWidth::F64)),
             28 => Ok(Self::Date32),
             29 => Ok(Self::Timestamp64),
-            _ => Err(CellParseError::ReservedType(id)),
+            _ => Err(CellValueParseError::ReservedType(id)),
         }
     }
 
-    /// The value width in bytes, or `None` for the length-prefixed `str` and
+    /// The value width in bytes, or `None` for the variable-width `str` and
     /// `bytes`.
     pub const fn width(self) -> Option<usize> {
         match self {
@@ -135,27 +134,22 @@ impl CellType {
     }
 
     /// Check that `value` is a valid stored value of this type.
-    pub fn validate(self, value: &[u8]) -> Result<(), CellParseError> {
+    pub fn validate(self, value: &[u8]) -> Result<(), CellValueParseError> {
         match self.width() {
             Some(n) if value.len() != n => {
-                return Err(CellParseError::LengthMismatch {
+                return Err(CellValueParseError::LengthMismatch {
                     ty: self,
                     expected: n,
-                    actual: value.len(),
-                });
-            }
-            None if value.len() > MAX_VALUE_LEN => {
-                return Err(CellParseError::TooLong {
                     actual: value.len(),
                 });
             }
             _ => {}
         }
         match self {
-            Self::Bool if value[0] > 1 => Err(CellParseError::InvalidBool(value[0])),
+            Self::Bool if value[0] > 1 => Err(CellValueParseError::InvalidBool(value[0])),
             Self::Str => match core::str::from_utf8(value) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(CellParseError::InvalidUtf8 {
+                Err(e) => Err(CellValueParseError::InvalidUtf8 {
                     valid_up_to: e.valid_up_to(),
                 }),
             },
@@ -169,9 +163,9 @@ impl CellType {
                     FloatWidth::F64 => f64::from_be_bytes(decode_float(value.try_into().unwrap())),
                 };
                 if x.is_nan() {
-                    Err(CellParseError::FloatNaN)
+                    Err(CellValueParseError::FloatNaN)
                 } else if x == 0.0 && x.is_sign_negative() {
-                    Err(CellParseError::NegativeZero)
+                    Err(CellValueParseError::NegativeZero)
                 } else {
                     Ok(())
                 }
