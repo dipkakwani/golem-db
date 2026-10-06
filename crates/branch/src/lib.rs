@@ -111,6 +111,19 @@
 //! The manager does not recompute roots for a sealed branch. History and
 //! change-set tables remain deferred; record-layer allocator/binding writes
 //! already staged as cells are persisted with all other sealed rows.
+//!
+//! # Callback errors and panics
+//!
+//! A [`Branches::write`] callback returning `Err` restores the overlay, version,
+//! and checkpoint state from before that call. An unwinding panic escaping the
+//! callback does the same, then propagates with its original payload after the
+//! branch lock is released without poisoning it. Earlier successful writes remain
+//! available if the caller catches the panic. Read callback panics also propagate
+//! without poisoning the branch lock. Subsequent calls still validate head.
+//!
+//! Recovery covers branch state, not external side effects, and requires panic
+//! unwinding and successful cleanup. See [`Branches`] for backend panic limits
+//! and [`Branches::commit`] for panics during publication.
 
 mod buffer;
 mod commit;
@@ -147,3 +160,11 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "tests/publication.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "tests/synchronization.rs"]
+mod test_sync;
+
+#[cfg(test)]
+#[path = "tests/concurrency.rs"]
+mod concurrency_tests;

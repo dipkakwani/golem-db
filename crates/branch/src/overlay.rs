@@ -141,6 +141,9 @@ impl<'a, R: ReadTransaction> CellRead<'a, R> {
 /// Reads include earlier writes in this callback. Values and keys are already
 /// structurally validated by their types; record admission rules and deployment
 /// limits belong to the record layer. This view cannot checkpoint or commit.
+/// Writes are retained only when the callback returns `Ok`; `Err` or an escaping
+/// unwinding panic restores the pre-call state. See [`crate::Branches::write`]
+/// for the complete atomicity and panic contract.
 pub struct CellWrite<'a, R: ReadTransaction> {
     overlay: &'a mut CellOverlay,
     origin: &'a R,

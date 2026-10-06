@@ -8,7 +8,7 @@ use golemdb_storage::{Database, MemoryDatabase, Table, WriteTransaction, scan_pr
 use std::{
     panic::AssertUnwindSafe,
     sync::{
-        Arc, Barrier,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -268,31 +268,4 @@ fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
     assert_eq!(branches.branch_info(branch).unwrap(), info);
     branches.rollback(branch).unwrap();
     branches.discard(branch).unwrap();
-}
-
-#[test]
-fn concurrent_commits_of_one_branch_publish_only_once() {
-    let db = MemoryDatabase::new();
-    seed(&db, &Keccak256Hasher, 0, &[]);
-    let branches = Branches::new(db, Keccak256Hasher).unwrap();
-    let branch = stage(&branches, "once");
-    let barrier = Barrier::new(2);
-    let results = std::thread::scope(|scope| {
-        let run = || {
-            barrier.wait();
-            branches.commit(branch)
-        };
-        let a = scope.spawn(run);
-        let b = scope.spawn(run);
-        [a.join().unwrap(), b.join().unwrap()]
-    });
-    assert_eq!(results.iter().filter(|r| matches!(r, Ok(1))).count(), 1);
-    assert_eq!(
-        results
-            .iter()
-            .filter(|r| matches!(r, Err(BranchError::HandleInvalid)))
-            .count(),
-        1
-    );
-    assert_eq!(branches.head().unwrap(), 1);
 }

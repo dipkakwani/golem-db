@@ -424,40 +424,6 @@ fn concurrent_operations_on_one_branch_are_atomic_and_do_not_lose_updates() {
     assert_eq!(get(&branches, b), Some(value("origin")));
 }
 
-#[test]
-fn operation_waiting_for_branch_validates_head_after_acquiring_lock() {
-    let db = MemoryDatabase::new();
-    publish(&db, 0, "origin");
-    let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
-    let b = branches.begin().unwrap();
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    std::thread::scope(|scope| {
-        let first = branches.clone();
-        scope.spawn(move || {
-            first
-                .write(b, |cells| {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    cells.put(key(), value("old branch"));
-                    Ok::<_, BranchError>(())
-                })
-                .unwrap()
-        });
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let second = branches.clone();
-        let waiting = scope
-            .spawn(move || second.read(b, |_| -> Result<(), ()> { panic!("stale callback ran") }));
-        publish(&db, 1, "advanced");
-        release_tx.send(()).unwrap();
-        assert!(matches!(
-            waiting.join().unwrap(),
-            Err(OperationError::Branch(BranchError::HandleInvalid))
-        ));
-    });
-    assert_invalid(&branches, b);
-}
-
 #[derive(Clone)]
 struct FaultDatabase {
     inner: MemoryDatabase,

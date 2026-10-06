@@ -69,15 +69,30 @@ struct Inner<D, H> {
 ///
 /// Callbacks should use their supplied view, not re-enter branch operations:
 /// the current branch lock is already held and nested calls can deadlock. They
-/// can return owned results, but cannot retain views or borrowed scans. Callback
-/// panics unwind atomic writes before the lock is released and are then resumed,
-/// leaving the manager usable if the caller catches the panic.
+/// can return owned results, but cannot retain views or borrowed scans.
 ///
 /// This increment does not initialize genesis, validate format/hash settings,
 /// authenticate entire tries, maintain history, or rewind the database. The supplied hash
 /// provider must match the deployment and is shared by all branch seals. External writers
 /// must publish cells and a strictly increasing head atomically; changing cells
 /// under an unchanged head or rewinding it violates this manager's contract.
+///
+/// # Callback panics
+///
+/// An unwinding panic escaping a [`read`](Self::read) or [`write`](Self::write)
+/// callback is resumed with its original payload after releasing the branch
+/// lock. It is not converted into an [`OperationError`] and does not poison
+/// that lock. A write first restores its pre-call overlay, version, and checkpoint
+/// state; earlier successful operations remain intact. A read leaves them untouched.
+/// If the caller catches the panic, subsequent operations can use the branch,
+/// subject to normal head validation.
+///
+/// This recovery requires unwinding and successful cleanup; it does not apply
+/// to `panic = "abort"` or a second panic during unwinding. Only branch state is
+/// restored, not side effects performed by the callback outside its cell view.
+/// This is not a general guarantee for backend panics: storage snapshot creation
+/// and head validation happen before the callback's panic guard, so a panic there
+/// can poison the branch lock. See [`commit`](Self::commit) for publication limits.
 pub struct Branches<D, H> {
     inner: Arc<Inner<D, H>>,
 }
@@ -140,6 +155,12 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
 
     /// Read cells from one validated branch snapshot. Callback errors are kept
     /// separate from errors admitting the operation (such as a stale ID).
+    ///
+    /// # Panics
+    ///
+    /// A panic escaping the callback leaves branch state unchanged and is resumed
+    /// after releasing the branch lock without poisoning it. See [`Branches`]
+    /// for the callback panic contract and its limits.
     pub fn read<T, E>(
         &self,
         branch_id: BranchId,
@@ -153,7 +174,17 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     }
 
     /// Atomically apply one cell operation group after validating its ID.
-    /// Callback failure restores the overlay without consuming a checkpoint.
+    /// Returning `Ok` retains all writes. Returning `Err` restores the overlay,
+    /// version, and checkpoint state from before this call and returns
+    /// [`OperationError::Operation`]. Earlier successful operations are preserved;
+    /// no checkpoint is needed to make this callback atomic.
+    ///
+    /// # Panics
+    ///
+    /// A panic escaping the callback performs the same restoration as `Err`, then
+    /// resumes the original panic after releasing the branch lock without poisoning
+    /// it. It is not returned as an error. If the callback catches its own panic
+    /// and returns `Ok`, its writes are retained. See [`Branches`] for recovery limits.
     pub fn write<T, E>(
         &self,
         branch_id: BranchId,
@@ -190,6 +221,12 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     /// database writer. Failure leaves the overlay and checkpoints untouched.
     /// Success freezes cell access. Repeated sealing returns the cached result,
     /// after validating head again; it does not reserve a commit number.
+    ///
+    /// # Panics
+    ///
+    /// An unwinding panic during seal computation leaves the branch open, with
+    /// its overlay, version, and checkpoints unchanged. The panic is resumed after
+    /// releasing the branch lock. The recovery limits on [`Branches`] apply.
     pub fn seal(&self, branch_id: BranchId) -> Result<Arc<SealedCommit>> {
         self.with_branch(branch_id, |state, origin| {
             state.seal(origin, &self.inner.hasher)
@@ -201,6 +238,16 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
     /// Success consumes the branch; competitors over the old head become stale.
     /// A failed seal leaves the branch open. A storage failure after sealing
     /// retains the sealed result for retry or discard, subject to head validation.
+    ///
+    /// # Panics
+    ///
+    /// A panic during seal computation has the same behavior as [`seal`](Self::seal).
+    /// An unwinding panic while checking the writer's head or replaying rows drops
+    /// the uncommitted transaction before resuming the panic; the sealed result is
+    /// retained. If the backend panics inside its consuming transaction `commit`,
+    /// the publication outcome and backend usability depend on that backend. The
+    /// manager does not guarantee rollback or safe retry in that case. The recovery
+    /// limits on [`Branches`] also apply.
     pub fn commit(&self, branch_id: BranchId) -> Result<CommitId> {
         self.with_slot(branch_id, |slot, origin| {
             let state = slot.as_mut().ok_or(BranchError::HandleInvalid)?;
@@ -272,7 +319,11 @@ impl<D: Database, H: HashProvider> Branches<D, H> {
             .cloned()
             .ok_or(BranchError::HandleInvalid)?;
         // Never wait for a branch while holding the registry lock.
+        #[cfg(not(test))]
         let mut slot = entry.lock().map_err(|_| BranchError::Poisoned("branch"))?;
+        #[cfg(test)]
+        let mut slot =
+            crate::test_sync::lock(&entry).map_err(|_| BranchError::Poisoned("branch"))?;
         let commit_id = slot.as_ref().ok_or(BranchError::HandleInvalid)?.commit_id;
         let origin = self.inner.database.begin_read()?;
         if read_head(&origin)? != commit_id {

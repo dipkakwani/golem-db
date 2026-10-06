@@ -75,37 +75,45 @@ fn assert_invalid<D: Database>(branches: &Branches<D, impl HashProvider>, handle
 }
 
 fn lifecycle(db: impl Database + Clone) {
+    // 1. Two branches start independently over the same published head.
     publish(&db, 7, "origin");
     let branches = Branches::new(db.clone(), Keccak256Hasher).unwrap();
     assert_eq!(branches.head().unwrap(), 7);
-    let a = branches.begin().unwrap();
-    let b = branches.begin().unwrap();
-    assert_eq!(branches.branch_info(a).unwrap().commit_id, 7);
-    assert_eq!(branches.branch_info(b).unwrap().commit_id, 7);
-    assert!(b > a);
-    put(&branches, a, "one");
-    branches.checkpoint(a).unwrap();
-    put(&branches, a, "two");
-    assert_eq!(get(&branches, a), Some(value("two")));
-    assert_eq!(get(&branches, b), Some(value("origin")));
-    branches.rollback(a).unwrap();
-    assert_eq!(get(&branches, a), Some(value("one")));
-    branches.rollback(a).unwrap();
-    assert_eq!(get(&branches, a), Some(value("origin")));
+    let edited = branches.begin().unwrap();
+    let sibling = branches.begin().unwrap();
+    assert_eq!(branches.branch_info(edited).unwrap().commit_id, 7);
+    assert_eq!(branches.branch_info(sibling).unwrap().commit_id, 7);
+    assert!(sibling > edited);
+
+    // 2. Writes and checkpoints in one branch are invisible to its sibling.
+    put(&branches, edited, "one");
+    branches.checkpoint(edited).unwrap();
+    put(&branches, edited, "two");
+    assert_eq!(get(&branches, edited), Some(value("two")));
+    assert_eq!(get(&branches, sibling), Some(value("origin")));
+
+    // 3. Rollback undoes each frame until the original cell is restored.
+    branches.rollback(edited).unwrap();
+    assert_eq!(get(&branches, edited), Some(value("one")));
+    branches.rollback(edited).unwrap();
+    assert_eq!(get(&branches, edited), Some(value("origin")));
     assert!(matches!(
-        branches.rollback(a),
+        branches.rollback(edited),
         Err(BranchError::NoFrameToRollback)
     ));
-    // Record scans also stay inside the validated callback/snapshot.
+
+    // 4. Prefix scans observe the restored state within the validated snapshot.
     let rows = branches
-        .read(a, |cells| {
+        .read(edited, |cells| {
             cells
                 .scan_prefix(&64u64.to_be_bytes())?
                 .collect::<golemdb_branch::Result<Vec<_>>>()
         })
         .unwrap();
     assert_eq!(rows, vec![(key(), value("origin"))]);
-    put(&branches, a, "staged");
+
+    // 5. Staging and discarding writes leave storage and the sibling untouched.
+    put(&branches, edited, "staged");
     assert_eq!(
         db.begin_read()
             .unwrap()
@@ -113,23 +121,26 @@ fn lifecycle(db: impl Database + Clone) {
             .unwrap(),
         Some(value("origin").into_bytes())
     );
-    branches.discard(a).unwrap();
-    assert_invalid(&branches, a);
-    assert_eq!(get(&branches, b), Some(value("origin")));
-    let c = branches.begin().unwrap();
-    assert!(c > b);
-    assert_eq!(get(&branches, c), Some(value("origin")));
+    branches.discard(edited).unwrap();
+    assert_invalid(&branches, edited);
+    assert_eq!(get(&branches, sibling), Some(value("origin")));
 
-    // An advance invalidates both branches, including reads of staged cells.
-    put(&branches, b, "must not escape");
+    // 6. A replacement gets a fresh ID and starts from the published state.
+    let replacement = branches.begin().unwrap();
+    assert!(replacement > sibling);
+    assert_eq!(get(&branches, replacement), Some(value("origin")));
+
+    // 7. External publication invalidates old branches, even for overlay hits.
+    put(&branches, sibling, "must not escape");
     publish(&db, 8, "new head");
     assert_eq!(branches.head().unwrap(), 8);
-    assert_invalid(&branches, b);
-    assert_invalid(&branches, c);
-    let next = branches.begin().unwrap();
-    assert_eq!(branches.branch_info(next).unwrap().commit_id, 8);
-    assert_eq!(get(&branches, next), Some(value("new head")));
-    // Root and head rows were not overwritten by any branch lifecycle call.
+    assert_invalid(&branches, sibling);
+    assert_invalid(&branches, replacement);
+
+    // 8. A new branch sees the new head; lifecycle calls have not altered its roots.
+    let fresh = branches.begin().unwrap();
+    assert_eq!(branches.branch_info(fresh).unwrap().commit_id, 8);
+    assert_eq!(get(&branches, fresh), Some(value("new head")));
     let head = db
         .begin_read()
         .unwrap()
