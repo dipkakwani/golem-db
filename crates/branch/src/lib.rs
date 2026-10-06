@@ -139,6 +139,11 @@ mod model_tests;
 #[cfg(test)]
 #[path = "tests/overlay.rs"]
 mod overlay_tests;
+
 #[cfg(test)]
-#[path = "tests/seal.rs"]
-mod seal_tests;
+#[path = "tests/lifecycle.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "tests/publication.rs"]
+mod publication_tests;

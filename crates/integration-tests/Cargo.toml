@@ -1,16 +1,22 @@
 [package]
-name = "golemdb-branch"
+name = "golemdb-integration-tests"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish = false
 
-[dependencies]
+[dev-dependencies]
+golemdb-branch.workspace = true
 golemdb-cells.workspace = true
 golemdb-index.workspace = true
 golemdb-merkle.workspace = true
 golemdb-storage.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
+golemdb-storage-mdbx.workspace = true
 proptest.workspace = true
+criterion.workspace = true
+tempfile = "3"
+
+[[bench]]
+name = "index"
+harness = false

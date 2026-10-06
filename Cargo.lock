@@ -509,7 +509,6 @@ dependencies = [
  "golemdb-merkle",
  "golemdb-storage",
  "proptest",
- "tempfile",
  "thiserror 1.0.69",
 ]
 
@@ -529,14 +528,27 @@ dependencies = [
 name = "golemdb-index"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "golemdb-cells",
  "golemdb-merkle",
  "golemdb-storage",
  "proptest",
  "roaring",
- "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "golemdb-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "golemdb-branch",
+ "golemdb-cells",
+ "golemdb-index",
+ "golemdb-merkle",
+ "golemdb-storage",
+ "golemdb-storage-mdbx",
+ "proptest",
+ "tempfile",
 ]
 
 [[package]]
@@ -556,10 +568,14 @@ dependencies = [
 [[package]]
 name = "golemdb-storage"
 version = "0.1.0"
+
+[[package]]
+name = "golemdb-storage-mdbx"
+version = "0.1.0"
 dependencies = [
+ "golemdb-storage",
  "libmdbx",
  "mdbx-sys",
- "proptest",
  "tempfile",
 ]
 

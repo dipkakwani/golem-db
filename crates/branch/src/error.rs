@@ -28,7 +28,7 @@ pub enum BranchError {
     #[error("invalid stored cell key: {0}")]
     Key(#[from] golemdb_cells::CellKeyError),
     #[error("invalid stored cell value: {0}")]
-    Value(#[from] golemdb_cells::CellParseError),
+    Value(#[from] golemdb_cells::CellValueParseError),
     #[error("no frame remains to roll back")]
     NoFrameToRollback,
 }
