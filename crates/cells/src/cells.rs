@@ -81,46 +81,47 @@ impl<'h, H: HashProvider> Cells<'h, H> {
     pub fn apply(
         &self,
         tx: &mut impl WriteTransaction,
-        mut root: RootRef<CELL_TRIE_PATH_BYTES>,
+        root: RootRef<CELL_TRIE_PATH_BYTES>,
         changes: impl IntoIterator<Item = CellChange>,
     ) -> Result<CellsUpdate> {
+        // `encoded_keys[i]` is the encoded key of `changed_cells[i]`.
+        let mut encoded_keys = Vec::new();
         let mut changed_cells = Vec::new();
         for (key, after) in normalize_changes(changes) {
-            if let Some(change) = self.apply_change(tx, &mut root, key, after)? {
+            if let Some((encoded_key, change)) = self.check_change(tx, root, key, after)? {
+                encoded_keys.push(encoded_key);
                 changed_cells.push(change);
             }
         }
+        // One trie update for the whole batch writes each touched branch once.
+        let edits = encoded_keys.iter().zip(&changed_cells);
+        let root = self.trie.set(
+            tx,
+            root,
+            edits.map(|(key, change)| (key.as_slice(), change.after.as_ref())),
+        )?;
+        write_values(tx, &encoded_keys, &changed_cells)?;
         Ok(CellsUpdate {
             root,
             changed_cells,
         })
     }
 
-    /// Check the original commitment, then update the trie and `Cell` row for one
-    /// net change. No-ops are still checked but do not write or produce a change.
-    /// Advance `root` after both writes succeed; any error requires a tx abort.
-    fn apply_change(
+    /// Check the original commitment for one net change. No-ops are checked
+    /// but produce no change. Keys are unique within a batch, so the original
+    /// root answers as the evolving root would. Returns the encoded key with
+    /// the change, so each key is encoded once. Any error requires a tx abort.
+    fn check_change(
         &self,
-        tx: &mut impl WriteTransaction,
-        root: &mut RootRef<CELL_TRIE_PATH_BYTES>,
+        tx: &impl ReadTransaction,
+        root: RootRef<CELL_TRIE_PATH_BYTES>,
         key: CellKey,
         after: Option<CellValue>,
-    ) -> Result<Option<CellValueChange>> {
+    ) -> Result<Option<(Vec<u8>, CellValueChange)>> {
         let encoded_key = key.encode();
         let before = read_value(tx, &encoded_key)?;
-        self.trie.check(tx, *root, &encoded_key, before.as_ref())?;
-        if before == after {
-            return Ok(None);
-        }
-        let updated_root = self.trie.set(tx, *root, &encoded_key, after.as_ref())?;
-        match &after {
-            Some(value) => tx.put(tables::CELL, &encoded_key, value.encoded_bytes())?,
-            None => {
-                tx.delete(tables::CELL, &encoded_key)?;
-            }
-        }
-        *root = updated_root;
-        Ok(Some(CellValueChange { key, before, after }))
+        self.trie.check(tx, root, &encoded_key, before.as_ref())?;
+        Ok((before != after).then_some((encoded_key, CellValueChange { key, before, after })))
     }
 }
 
@@ -180,6 +181,23 @@ fn read_value(tx: &impl ReadTransaction, key: &[u8]) -> Result<Option<CellValue>
         .map(CellValue::parse)
         .transpose()
         .map_err(Into::into)
+}
+
+/// Write each change's final value under its encoded key, or delete the row.
+fn write_values(
+    tx: &mut impl WriteTransaction,
+    encoded_keys: &[Vec<u8>],
+    changes: &[CellValueChange],
+) -> Result<()> {
+    for (key, change) in encoded_keys.iter().zip(changes) {
+        match &change.after {
+            Some(value) => tx.put(tables::CELL, key, value.encoded_bytes())?,
+            None => {
+                tx.delete(tables::CELL, key)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Lazy record scan. Storage or decoding errors are returned once and terminate

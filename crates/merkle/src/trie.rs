@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::{BranchNodeCompact, Hash, HashProvider, MerkleError, Result, path};
 use golemdb_storage::{ReadTransaction, StorageError, Table, WriteTransaction};
 
@@ -125,6 +127,32 @@ impl<'h, H: HashProvider, const N: usize> Trie<'h, H, N> {
         path: &[u8; N],
     ) -> Result<RootRef<N>> {
         self.edit(tx, root, path, None, &[])
+    }
+
+    /// Set the leaf hash at each path, or remove the path for `None`; the last
+    /// edit of a path wins. Same root as one `insert`/`remove` per edit, but
+    /// each touched branch is rebuilt and stored once, so no intermediate
+    /// version of a branch is written.
+    pub fn apply(
+        &self,
+        tx: &mut impl WriteTransaction,
+        root: RootRef<N>,
+        edits: impl IntoIterator<Item = ([u8; N], Option<Hash>)>,
+    ) -> Result<RootRef<N>> {
+        let mut edits: Vec<_> = edits.into_iter().collect();
+        // Stable sorting preserves input order for each path: the last edit wins.
+        edits.sort_by_key(|edit| edit.0);
+        edits.dedup_by(|later, earlier| {
+            if later.0 == earlier.0 {
+                // dedup_by keeps the earlier entry; copy the last edit into it.
+                earlier.1 = later.1;
+                true
+            } else {
+                false
+            }
+        });
+        let edited = self.apply_at(tx, root, &edits, &[])?;
+        self.store_edited(tx, edited, &[])
     }
 
     /// Lazy ascending path traversal. Storage/corruption errors are yielded once
@@ -327,6 +355,174 @@ impl<'h, H: HashProvider, const N: usize> Trie<'h, H, N> {
             )
         }
     }
+
+    /// Edits are sorted by path, unique, and share `route`. A branch whose
+    /// prefix every edit follows keeps its untouched children; anything else
+    /// here is small and is rebuilt from its merged leaves.
+    fn apply_at(
+        &self,
+        tx: &mut impl WriteTransaction,
+        root: RootRef<N>,
+        edits: &[([u8; N], Option<Hash>)],
+        route: &[u8],
+    ) -> Result<Edited<N>> {
+        let RootRef::Branch(hash) = root else {
+            return self.rebuild(tx, root, edits, route);
+        };
+        let node = self.load(tx, hash, route)?;
+        let prefix = node.unpack_prefix();
+        let follows = |path: &[u8; N]| {
+            (prefix.iter().enumerate()).all(|(i, n)| path::nibble(path, route.len() + i) == *n)
+        };
+        if !edits.iter().all(|(path, _)| follows(path)) {
+            return self.rebuild(tx, root, edits, route);
+        }
+        let children = node.children();
+        let mut child_route = [route, &prefix].concat();
+        let depth = child_route.len();
+        let mut edited_children = children.map(Edited::Stored);
+        for group in edits.chunk_by(|a, b| path::nibble(&a.0, depth) == path::nibble(&b.0, depth)) {
+            let slot = path::nibble(&group[0].0, depth) as usize;
+            child_route.push(slot as u8);
+            edited_children[slot] = self.apply_at(tx, children[slot], group, &child_route)?;
+            child_route.pop();
+        }
+        let unchanged = (edited_children.iter().zip(children))
+            .all(|(edited, child)| *edited == Edited::Stored(child));
+        if unchanged {
+            return Ok(Edited::Stored(root));
+        }
+        self.collapse(tx, prefix, edited_children, child_route)
+    }
+
+    /// Form the edited branch from its edited children, keeping the trie free
+    /// of unary branches: with no children it is empty, a lone leaf replaces
+    /// it, and a lone branch absorbs its prefix. Several children are stored
+    /// under it. `child_route` is the branch's route followed by its prefix.
+    fn collapse(
+        &self,
+        tx: &mut impl WriteTransaction,
+        prefix: Vec<u8>,
+        mut edited_children: [Edited<N>; 16],
+        mut child_route: Vec<u8>,
+    ) -> Result<Edited<N>> {
+        let active: Vec<_> = (0..16)
+            .filter(|&slot| edited_children[slot] != Edited::Stored(RootRef::Empty))
+            .collect();
+        match active[..] {
+            [] => Ok(Edited::Stored(RootRef::Empty)),
+            [slot] => {
+                let only =
+                    std::mem::replace(&mut edited_children[slot], Edited::Stored(RootRef::Empty));
+                let (child_prefix, grandchildren) = match only {
+                    Edited::New(child_prefix, grandchildren) => (child_prefix, grandchildren),
+                    Edited::Stored(RootRef::Branch(hash)) => {
+                        child_route.push(slot as u8);
+                        let child = self.load(tx, hash, &child_route)?;
+                        (child.unpack_prefix(), Box::new(child.children()))
+                    }
+                    leaf => return Ok(leaf),
+                };
+                let merged = [&prefix[..], &[slot as u8], &child_prefix].concat();
+                Ok(Edited::New(merged, grandchildren))
+            }
+            _ => {
+                let mut children = [RootRef::Empty; 16];
+                for (slot, edited) in edited_children.into_iter().enumerate() {
+                    child_route.push(slot as u8);
+                    children[slot] = self.store_edited(tx, edited, &child_route)?;
+                    child_route.pop();
+                }
+                Ok(Edited::New(prefix, Box::new(children)))
+            }
+        }
+    }
+
+    /// Rebuild a subtrie from its current leaves merged with `edits`.
+    fn rebuild(
+        &self,
+        tx: &mut impl WriteTransaction,
+        root: RootRef<N>,
+        edits: &[([u8; N], Option<Hash>)],
+        route: &[u8],
+    ) -> Result<Edited<N>> {
+        let mut leaves = BTreeMap::new();
+        let walk = Walk {
+            trie: self,
+            tx: &*tx,
+            stack: vec![(root, route.to_vec())],
+        };
+        for leaf in walk {
+            let leaf = leaf?;
+            leaves.insert(leaf.path, leaf.hash);
+        }
+        for (path, hash) in edits {
+            match hash {
+                Some(hash) => leaves.insert(*path, *hash),
+                None => leaves.remove(path),
+            };
+        }
+        let leaves: Vec<_> = leaves
+            .into_iter()
+            .map(|(path, hash)| LeafRef { path, hash })
+            .collect();
+        self.build(tx, &leaves, route)
+    }
+
+    /// The canonical subtrie at `route` for leaves sorted by path.
+    fn build(
+        &self,
+        tx: &mut impl WriteTransaction,
+        leaves: &[LeafRef<N>],
+        route: &[u8],
+    ) -> Result<Edited<N>> {
+        let (first, last) = match leaves {
+            [] => return Ok(Edited::Stored(RootRef::Empty)),
+            [only] => return Ok(Edited::Stored(RootRef::Leaf(*only))),
+            [first, .., last] => (path::nibbles(&first.path), path::nibbles(&last.path)),
+        };
+        let depth = (route.len()..N * 2).find(|&i| first[i] != last[i]).unwrap();
+        let mut children = [RootRef::Empty; 16];
+        let mut child_route = first[..depth].to_vec();
+        for group in
+            leaves.chunk_by(|a, b| path::nibble(&a.path, depth) == path::nibble(&b.path, depth))
+        {
+            child_route.push(path::nibble(&group[0].path, depth));
+            let child = self.build(tx, group, &child_route)?;
+            children[child_route[depth] as usize] = self.store_edited(tx, child, &child_route)?;
+            child_route.pop();
+        }
+        Ok(Edited::New(
+            first[route.len()..depth].to_vec(),
+            Box::new(children),
+        ))
+    }
+
+    /// Store a new branch at `route` and return its reference. Anything else
+    /// is already stored, or is empty or a leaf, which have no row.
+    fn store_edited(
+        &self,
+        tx: &mut impl WriteTransaction,
+        edited: Edited<N>,
+        route: &[u8],
+    ) -> Result<RootRef<N>> {
+        match edited {
+            Edited::Stored(root) => Ok(root),
+            Edited::New(prefix, children) => self.store(
+                tx,
+                BranchNodeCompact::from_children(&prefix, &children)?,
+                route,
+            ),
+        }
+    }
+}
+
+/// A subtrie edited by a batch. A new branch is stored only once its parent
+/// keeps it beside a sibling; a parent left with one child absorbs it instead.
+#[derive(PartialEq)]
+enum Edited<const N: usize> {
+    Stored(RootRef<N>),
+    New(Vec<u8>, Box<[RootRef<N>; 16]>),
 }
 
 pub struct Walk<'a, T: ReadTransaction, H: HashProvider, const N: usize> {

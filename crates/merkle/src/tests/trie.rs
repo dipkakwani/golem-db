@@ -1,7 +1,14 @@
-use std::{cell::Cell, collections::BTreeMap};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+};
 
-use crate::{Hash, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef, Trie};
-use golemdb_storage::{Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction};
+use crate::{
+    BranchNodeCompact, Hash, HashProvider, Keccak256Hasher, LeafRef, MerkleError, RootRef, Trie,
+};
+use golemdb_storage::{
+    Database, MemoryDatabase, ReadTransaction, Table, WriteTransaction, scan_prefix,
+};
 use proptest::prelude::*;
 
 const TABLE: Table = Table("TestBranches");
@@ -128,6 +135,94 @@ proptest! {
         exercise::<6>(&ops);
         exercise::<32>(&ops);
     }
+}
+
+/// Branch rows reachable from `root`.
+fn branches<const N: usize>(tx: &impl ReadTransaction, root: RootRef<N>) -> BTreeSet<Vec<u8>> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(root) = stack.pop() {
+        if let RootRef::Branch(hash) = root {
+            let node =
+                BranchNodeCompact::<N>::decode(&tx.get(TABLE, &hash).unwrap().unwrap()).unwrap();
+            stack.extend((0..16).filter_map(|slot| node.child(slot)));
+            seen.insert(hash.to_vec());
+        }
+    }
+    seen
+}
+
+fn rows(tx: &impl ReadTransaction) -> BTreeSet<Vec<u8>> {
+    scan_prefix(tx, TABLE, vec![])
+        .unwrap()
+        .map(|row| row.unwrap().0)
+        .collect()
+}
+
+/// Commit `base` one leaf at a time, then apply `edits` as one batch.
+fn batch<const N: usize>(base: &[(u8, u32)], edits: &[(u8, u32, bool)]) {
+    let db = MemoryDatabase::new();
+    let trie = Trie::<_, N>::new(TABLE, TEST_BRANCH_DOMAIN, &HASH);
+    let mut tx = db.begin_write().unwrap();
+    let mut expected = BTreeMap::new();
+    let mut old = RootRef::Empty;
+    for &(id, value) in base {
+        old = trie.insert(&mut tx, old, leaf(key(id), value)).unwrap();
+        expected.insert(key(id), leaf(key(id), value));
+    }
+    tx.commit().unwrap();
+    let old_leaves: Vec<_> = expected.values().copied().collect();
+    let before = rows(&db.begin_read().unwrap());
+    let mut changes = Vec::new();
+    for &(id, value, present) in edits {
+        let new = leaf(key::<N>(id), value);
+        changes.push((new.path, present.then_some(new.hash)));
+        if present {
+            expected.insert(new.path, new);
+        } else {
+            expected.remove(&new.path);
+        }
+    }
+    let mut tx = db.begin_write().unwrap();
+    let root = trie.apply(&mut tx, old, changes).unwrap();
+    tx.commit().unwrap();
+    let read = db.begin_read().unwrap();
+    let sorted: Vec<_> = expected.values().copied().collect();
+    assert_eq!(root.hash(&HASH), bulk(&sorted, 0));
+    assert_eq!(
+        trie.walk(&read, root)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        sorted
+    );
+    // History is kept, and the batch wrote no branch the new root misses.
+    assert_eq!(
+        trie.walk(&read, old)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap(),
+        old_leaves
+    );
+    let written: BTreeSet<_> = rows(&read).difference(&before).cloned().collect();
+    assert!(written.is_subset(&branches(&read, root)));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+    #[test]
+    fn batched_edits_match_bulk_and_write_only_reachable_branches(
+        base in prop::collection::vec((0u8..64, any::<u32>()), 0..40),
+        edits in prop::collection::vec((0u8..64, any::<u32>(), any::<bool>()), 0..60),
+    ) {
+        batch::<6>(&base, &edits);
+        batch::<32>(&base, &edits);
+    }
+}
+
+#[test]
+fn batch_removing_every_leaf_empties_the_trie() {
+    let all: Vec<_> = (0..64).map(|id| (id, 0, false)).collect();
+    batch::<6>(&(0..64).map(|id| (id, 7)).collect::<Vec<_>>(), &all);
+    batch::<32>(&[(3, 1), (40, 2)], &all);
 }
 
 #[test]

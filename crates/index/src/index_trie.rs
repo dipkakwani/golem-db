@@ -39,19 +39,21 @@ impl<'h, H: HashProvider> IndexTrie<'h, H> {
         Ok(())
     }
 
-    pub(crate) fn set(
+    /// Set each term's bitmap root, removing the term for `None`, in one
+    /// batched trie update.
+    pub(crate) fn set<'t>(
         &self,
         tx: &mut impl WriteTransaction,
         root: RootRef<INDEX_TRIE_PATH_BYTES>,
-        term: &IndexTerm,
-        bitmap: Option<Hash>,
+        changes: impl IntoIterator<Item = (&'t IndexTerm, Option<Hash>)>,
     ) -> Result<RootRef<INDEX_TRIE_PATH_BYTES>> {
-        Ok(match bitmap {
-            Some(hash) => self.trie.insert(tx, root, self.leaf(term, hash))?,
-            None => self
-                .trie
-                .remove(tx, root, &term.routing_path(self.hasher))?,
-        })
+        let edits = changes.into_iter().map(|(term, bitmap)| {
+            (
+                term.routing_path(self.hasher),
+                bitmap.map(|hash| self.leaf(term, hash).hash),
+            )
+        });
+        Ok(self.trie.apply(tx, root, edits)?)
     }
 
     pub(crate) fn reopen(

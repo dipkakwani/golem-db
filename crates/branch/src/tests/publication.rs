@@ -269,3 +269,105 @@ fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
     branches.rollback(branch).unwrap();
     branches.discard(branch).unwrap();
 }
+
+/// Branch rows of `table` reachable from `roots`; leaf and empty roots have no row.
+fn reachable_rows(
+    tx: &impl golemdb_storage::ReadTransaction,
+    table: Table,
+    roots: &[Hash],
+) -> std::collections::BTreeSet<Vec<u8>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = roots.to_vec();
+    while let Some(hash) = stack.pop() {
+        let Some(bytes) = tx.get(table, &hash).unwrap() else {
+            continue;
+        };
+        if !seen.insert(hash.to_vec()) {
+            continue;
+        }
+        let node = golemdb_merkle::BranchNodeCompact::<32>::decode(&bytes).unwrap();
+        for slot in 0..16 {
+            if let Some(RootRef::Branch(child)) = node.child(slot) {
+                stack.push(child);
+            }
+        }
+    }
+    seen
+}
+
+#[test]
+fn commits_store_only_trie_rows_reachable_from_committed_roots() {
+    let db = MemoryDatabase::new();
+    seed(&db, &Keccak256Hasher, 0, &[]);
+    let branches = Branches::new(db, Keccak256Hasher).unwrap();
+    let genesis = crate::head::read_head_state(&branches.database().begin_read().unwrap()).unwrap();
+    let (mut states, mut indexes) = (vec![genesis.state_root], vec![genesis.index_root]);
+    // Commit 1 creates 40 records; commit 2 rewrites most of them and removes some cells.
+    for round in 0..2u64 {
+        let branch = branches.begin().unwrap();
+        branches
+            .write(branch, |cells| {
+                for id in 64..104u64 {
+                    if round == 1 && id % 3 == 0 {
+                        cells.delete(key(id, b"tag"));
+                        continue;
+                    }
+                    cells.put(
+                        key(id, b"tag"),
+                        value(&format!("t{}", (id + round) % 7), true),
+                    );
+                    cells.put(key(id, b"name"), value(&format!("n{id}-{round}"), true));
+                    cells.put(key(id, b"note"), value("plain", false));
+                }
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let sealed = branches.seal(branch).unwrap();
+        states.push(sealed.state_root);
+        indexes.push(sealed.index_root);
+        branches.commit(branch).unwrap();
+    }
+    let tx = branches.database().begin_read().unwrap();
+    let rows = |table| {
+        scan_prefix(&tx, table, vec![])
+            .unwrap()
+            .map(|row| row.unwrap().0)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    // No intermediate versions: every stored trie row belongs to a committed root.
+    assert_eq!(
+        rows(tables::CELL_TRIE),
+        reachable_rows(&tx, tables::CELL_TRIE, &states)
+    );
+    assert_eq!(
+        rows(golemdb_index::tables::INDEX_TRIE),
+        reachable_rows(&tx, golemdb_index::tables::INDEX_TRIE, &indexes)
+    );
+    // Nothing needed was dropped: the head trie reaches every current cell, and
+    // every current term's posting list loads.
+    let head = crate::head::read_head_state(&tx).unwrap();
+    let hasher = Keccak256Hasher;
+    let root = Cells::new(&hasher).reopen(&tx, head.state_root).unwrap();
+    let trie = golemdb_merkle::Trie::<_, 32>::new(
+        tables::CELL_TRIE,
+        golemdb_cells::CELL_BRANCH_DOMAIN,
+        &hasher,
+    );
+    let leaves = trie
+        .walk(&tx, root)
+        .collect::<golemdb_merkle::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(leaves.len(), rows(tables::CELL).len());
+    let index = Index::new(&hasher);
+    for term in rows(golemdb_index::tables::INDEX) {
+        let term = IndexTerm::decode(&term).unwrap();
+        assert!(
+            !index
+                .bitmap(&tx, &term)
+                .unwrap()
+                .unwrap()
+                .treemap()
+                .is_empty()
+        );
+    }
+}
