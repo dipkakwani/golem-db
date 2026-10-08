@@ -270,8 +270,9 @@ fn implicit_seal_failure_keeps_branch_open_and_never_opens_writer() {
     branches.discard(branch).unwrap();
 }
 
-/// Branch rows of `table` reachable from `roots`; leaf and empty roots have no row.
-fn reachable_rows(
+/// Branch rows of `table`, whose paths have `N` bytes, reachable from `roots`;
+/// leaf and empty roots have no row.
+fn reachable_rows<const N: usize>(
     tx: &impl golemdb_storage::ReadTransaction,
     table: Table,
     roots: &[Hash],
@@ -285,7 +286,7 @@ fn reachable_rows(
         if !seen.insert(hash.to_vec()) {
             continue;
         }
-        let node = golemdb_merkle::BranchNodeCompact::<32>::decode(&bytes).unwrap();
+        let node = golemdb_merkle::BranchNodeCompact::<N>::decode(&bytes).unwrap();
         for slot in 0..16 {
             if let Some(RootRef::Branch(child)) = node.child(slot) {
                 stack.push(child);
@@ -295,6 +296,15 @@ fn reachable_rows(
     seen
 }
 
+/// The bitmap root of every term in the committed index.
+fn bitmap_roots(db: &impl Database) -> Vec<Hash> {
+    let tx = db.begin_read().unwrap();
+    scan_prefix(&tx, golemdb_index::tables::INDEX, vec![])
+        .unwrap()
+        .map(|row| row.unwrap().1.try_into().unwrap())
+        .collect()
+}
+
 #[test]
 fn commits_store_only_trie_rows_reachable_from_committed_roots() {
     let db = MemoryDatabase::new();
@@ -302,13 +312,17 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
     let branches = Branches::new(db, Keccak256Hasher).unwrap();
     let genesis = crate::head::read_head_state(&branches.database().begin_read().unwrap()).unwrap();
     let (mut states, mut indexes) = (vec![genesis.state_root], vec![genesis.index_root]);
+    let mut bitmaps = bitmap_roots(branches.database());
     // Commit 1 creates 40 records; commit 2 rewrites most of them and removes some cells.
     for round in 0..2u64 {
         let branch = branches.begin().unwrap();
         branches
             .write(branch, |cells| {
-                for id in 64..104u64 {
-                    if round == 1 && id % 3 == 0 {
+                for i in 64..104u64 {
+                    // Spread the records over three bitmap containers, so one
+                    // tag term changes several containers in one commit.
+                    let id = golemdb_index::path::join(i % 3, i as u16).unwrap();
+                    if round == 1 && i % 3 == 0 {
                         cells.delete(key(id, b"tag"));
                         continue;
                     }
@@ -326,6 +340,7 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
         states.push(sealed.state_root);
         indexes.push(sealed.index_root);
         branches.commit(branch).unwrap();
+        bitmaps.extend(bitmap_roots(branches.database()));
     }
     let tx = branches.database().begin_read().unwrap();
     let rows = |table| {
@@ -337,11 +352,23 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
     // No intermediate versions: every stored trie row belongs to a committed root.
     assert_eq!(
         rows(tables::CELL_TRIE),
-        reachable_rows(&tx, tables::CELL_TRIE, &states)
+        reachable_rows::<{ golemdb_cells::CELL_TRIE_PATH_BYTES }>(&tx, tables::CELL_TRIE, &states)
     );
     assert_eq!(
         rows(golemdb_index::tables::INDEX_TRIE),
-        reachable_rows(&tx, golemdb_index::tables::INDEX_TRIE, &indexes)
+        reachable_rows::<{ golemdb_index::INDEX_TRIE_PATH_BYTES }>(
+            &tx,
+            golemdb_index::tables::INDEX_TRIE,
+            &indexes
+        )
+    );
+    assert_eq!(
+        rows(golemdb_index::tables::BITMAP_TRIE),
+        reachable_rows::<{ golemdb_index::BITMAP_TRIE_PATH_BYTES }>(
+            &tx,
+            golemdb_index::tables::BITMAP_TRIE,
+            &bitmaps
+        )
     );
     // Nothing needed was dropped: the head trie reaches every current cell, and
     // every current term's posting list loads.
