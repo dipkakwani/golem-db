@@ -84,26 +84,23 @@ impl<'h, H: HashProvider> Cells<'h, H> {
         root: RootRef<CELL_TRIE_PATH_BYTES>,
         changes: impl IntoIterator<Item = CellChange>,
     ) -> Result<CellsUpdate> {
-        // `encoded_keys[i]` is the encoded key of `changed_cells[i]`.
-        let mut encoded_keys = Vec::new();
-        let mut changed_cells = Vec::new();
+        let mut changes_by_key = Vec::new();
         for (key, after) in normalize_changes(changes) {
-            if let Some((encoded_key, change)) = self.check_change(tx, root, key, after)? {
-                encoded_keys.push(encoded_key);
-                changed_cells.push(change);
+            if let Some(change) = self.check_change(tx, root, key, after)? {
+                changes_by_key.push(change);
             }
         }
         // One trie update for the whole batch writes each touched branch once.
-        let edits = encoded_keys.iter().zip(&changed_cells);
-        let root = self.trie.set(
-            tx,
-            root,
-            edits.map(|(key, change)| (key.as_slice(), change.after.as_ref())),
-        )?;
-        write_values(tx, &encoded_keys, &changed_cells)?;
+        let edits =
+            (changes_by_key.iter()).map(|(key, change)| (key.as_slice(), change.after.as_ref()));
+        let root = self.trie.set(tx, root, edits)?;
+        write_values(tx, &changes_by_key)?;
         Ok(CellsUpdate {
             root,
-            changed_cells,
+            changed_cells: changes_by_key
+                .into_iter()
+                .map(|(_, change)| change)
+                .collect(),
         })
     }
 
@@ -186,10 +183,9 @@ fn read_value(tx: &impl ReadTransaction, key: &[u8]) -> Result<Option<CellValue>
 /// Write each change's final value under its encoded key, or delete the row.
 fn write_values(
     tx: &mut impl WriteTransaction,
-    encoded_keys: &[Vec<u8>],
-    changes: &[CellValueChange],
+    changes_by_key: &[(Vec<u8>, CellValueChange)],
 ) -> Result<()> {
-    for (key, change) in encoded_keys.iter().zip(changes) {
+    for (key, change) in changes_by_key {
         match &change.after {
             Some(value) => tx.put(tables::CELL, key, value.encoded_bytes())?,
             None => {

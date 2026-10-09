@@ -375,7 +375,7 @@ fn commits_store_only_trie_rows_reachable_from_committed_roots() {
     let head = crate::head::read_head_state(&tx).unwrap();
     let hasher = Keccak256Hasher;
     let root = Cells::new(&hasher).reopen(&tx, head.state_root).unwrap();
-    let trie = golemdb_merkle::Trie::<_, 32>::new(
+    let trie = golemdb_merkle::Trie::<_, { golemdb_cells::CELL_TRIE_PATH_BYTES }>::new(
         tables::CELL_TRIE,
         golemdb_cells::CELL_BRANCH_DOMAIN,
         &hasher,
