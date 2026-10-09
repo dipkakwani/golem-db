@@ -47,11 +47,12 @@ impl<'h, H: HashProvider> IndexTrie<'h, H> {
         root: RootRef<INDEX_TRIE_PATH_BYTES>,
         changes: impl IntoIterator<Item = (&'t IndexTerm, Option<Hash>)>,
     ) -> Result<RootRef<INDEX_TRIE_PATH_BYTES>> {
-        let edits = changes.into_iter().map(|(term, bitmap)| {
-            (
-                term.routing_path(self.hasher),
-                bitmap.map(|hash| self.leaf(term, hash).hash),
-            )
+        let edits = changes.into_iter().map(|(term, bitmap)| match bitmap {
+            Some(hash) => {
+                let leaf = self.leaf(term, hash);
+                (leaf.path, Some(leaf.hash))
+            }
+            None => (term.routing_path(self.hasher), None),
         });
         Ok(self.trie.apply(tx, root, edits)?)
     }
